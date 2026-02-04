@@ -1,6 +1,8 @@
 from fastapi import APIRouter, UploadFile, File, HTTPException
 from uuid import uuid4
 import os
+import subprocess
+import sys
 
 router = APIRouter()
 
@@ -58,10 +60,23 @@ async def upload_pdf(file: UploadFile = File(...)):
             except OSError:
                 pass
             raise HTTPException(status_code=400, detail="Invalid PDF file.")
+        # Run parsing.py on the uploaded temp PDF and write JSON output
+    json_out_path = os.path.join(UPLOAD_DIR, f"{upload_id}.json")
+
+    result = subprocess.run(
+        [sys.executable, "app/services/parsing.py", os.path.abspath(out_path), "--out", os.path.abspath(json_out_path)],
+        capture_output=True,
+        text=True
+    )
+
+    if result.returncode != 0:
+        raise HTTPException(status_code=500, detail=result.stderr or result.stdout)
 
     return {
         "upload_id": upload_id,
         "original_filename": file.filename,
         "size_bytes": total,
         "status": "uploaded",
+        "json_path": os.path.abspath(json_out_path),
+
     }

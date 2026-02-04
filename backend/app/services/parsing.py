@@ -686,7 +686,7 @@ def run_ocr_on_image_occurrences(image_occurrences, asset_bytes_global, min_px: 
 # Main extraction: Phase 1 + 2 + 2.5
 # -----------------------------
 
-def extract_document_json(pdf_path: str) -> Dict[str, Any]:
+def extract_document_json(pdf_path: str ,run_ocr: bool = True) -> Dict[str, Any]:
     # Phase 2 first (uses file path)
     text_blocks, reading_order = extract_pdfminer_blocks(pdf_path)
 
@@ -766,7 +766,8 @@ def extract_document_json(pdf_path: str) -> Dict[str, Any]:
 
     doc.close()
     # Phase 4: OCR (fills image_occurrences[].ocr_text and .ocr_confidence)
-    run_ocr_on_image_occurrences(all_image_occurrences, all_asset_bytes)
+    if run_ocr:
+       run_ocr_on_image_occurrences(all_image_occurrences, all_asset_bytes)
 
     # Phase 2.5 alignment
     text_blocks = align_blocks_to_spans(text_blocks, text_spans, pages)
@@ -815,7 +816,7 @@ def main():
 
     data = extract_document_json(args.pdf_path)
     Path(args.out).write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-    print(f"✅ Wrote JSON to: {args.out}")
+    print(f"Wrote JSON to: {args.out}")
 
 
 if __name__ == "__main__":
