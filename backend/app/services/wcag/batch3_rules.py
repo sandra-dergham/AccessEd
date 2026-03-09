@@ -1,24 +1,3 @@
-"""
-AccessEd – WCAG Batch 3 Violation Detector
-===========================================
-File:  backend/app/services/wcag/batch3_rules.py
-
-Batch 3 Guidelines
-------------------
-  2.1.1  Keyboard
-  2.1.2  No Keyboard Trap
-  2.1.4  Character Key Shortcuts
-  2.2.1  Timing Adjustable
-  2.2.2  Pause, Stop, Hide
-  2.3.1  Three Flashes or Below Threshold
-  3.3.1  Error Identification
-  3.3.2  Labels or Instructions
-  3.3.3  Error Suggestion
-  3.3.4  Error Prevention (Legal, Financial, Data)
-  4.1.1  Parsing
-  4.1.2  Name, Role, Value
-"""
-
 from __future__ import annotations
 from typing import Any, Dict, List
 from .issue import make_issue
@@ -1327,15 +1306,11 @@ def check_4_1_2_name_role_value(doc_json):
             )
 
     # ── F: checkboxes/radio buttons with no appearance state ──────────────────
-    # Btn fields: bit 16 of /Ff = push button (exclude), bit 15 = radio button
-    # If neither bit set → checkbox
-    # We check Btn fields that are not push buttons
-    for field in interactive_fields:
         if field.get("type") != "Btn":
             continue
 
         ff = field.get("flags", 0)
-        is_push_button = bool(ff & (1 << 16))  # bit 16 (0-indexed: 15)
+        is_push_button = bool(ff & (1 << 16))  
         if is_push_button:
             continue  # push buttons don't have checked state
 
@@ -1343,7 +1318,7 @@ def check_4_1_2_name_role_value(doc_json):
 
         if not field.get("appearance_state"):
             field_id = field.get("id", "unknown")
-            is_radio = bool(ff & (1 << 14))  # bit 15 (0-indexed: 14)
+            is_radio = bool(ff & (1 << 14))  
             kind     = "radio button" if is_radio else "checkbox"
             issues.append(
                 make_issue(
