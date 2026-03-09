@@ -1306,6 +1306,7 @@ def check_4_1_2_name_role_value(doc_json):
             )
 
     # ── F: checkboxes/radio buttons with no appearance state ──────────────────
+    for field in interactive_fields:
         if field.get("type") != "Btn":
             continue
 
