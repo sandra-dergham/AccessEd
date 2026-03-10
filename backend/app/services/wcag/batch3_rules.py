@@ -322,7 +322,7 @@ def check_2_2_2_pause_stop_hide(doc_json):
 
     This criterion covers two distinct sub-cases, each with its own conditions:
 
-    Sub-case A - Moving, blinking, or scrolling content:
+    Sub-case A – Moving, blinking, or scrolling content:
       A violation exists only if ALL of the following are true:
         (1) the content starts automatically
         (2) it lasts more than 5 seconds
@@ -330,7 +330,7 @@ def check_2_2_2_pause_stop_hide(doc_json):
         (4) no mechanism exists to pause, stop, or hide it
       Exception: if the movement is essential to the activity, no violation.
 
-    Sub-case B - Auto-updating content:
+    Sub-case B – Auto-updating content:
       A violation exists only if ALL of the following are true:
         (1) the content starts automatically
         (2) it is presented in parallel with other content
@@ -632,6 +632,33 @@ def check_3_3_1_error_identification(doc_json):
         )
         return issues
 
+    # B2: no per-field validation but document-level JS is present —
+    # cannot rule out that JS is performing validation; needs manual review
+    if not fields_with_validation and has_js:
+        issues.append(
+            make_issue(
+                criterion="3.3.1",
+                issue=(
+                    "No per-field validation actions (/AA /V) were detected, but "
+                    "document-level JavaScript is present. It cannot be confirmed "
+                    "statically that JavaScript is not performing error detection. "
+                    "Manual review of all JavaScript is required to determine "
+                    "whether automatic error detection exists and, if so, whether "
+                    "errors are identified and described in text."
+                ),
+                location={"scope": "document", "page": None},
+                severity="needs_review",
+                recommendation=(
+                    "Review all document-level JavaScript. If any script performs "
+                    "input validation, confirm that: (1) the specific field in error "
+                    "is identified to the user, and (2) the error is described in "
+                    "plain text (e.g. 'Email address must contain @' rather than "
+                    "just 'Invalid input')."
+                ),
+            )
+        )
+        return issues
+
     # C: some fields have validation — cannot confirm it meets 3.3.1 statically
     if fields_with_validation:
         validated_list = ", ".join(
@@ -902,6 +929,33 @@ def check_3_3_3_error_suggestion(doc_json):
                     "No action required under 3.3.3. If validation is added in "
                     "future, ensure that correction suggestions are provided where "
                     "known, unless doing so would jeopardize security or purpose."
+                ),
+            )
+        )
+        return issues
+
+    # B2: no per-field validation but document-level JS present —
+    # cannot rule out that JS is performing validation; needs manual review
+    if not fields_with_validation and has_js:
+        issues.append(
+            make_issue(
+                criterion="3.3.3",
+                issue=(
+                    "No per-field validation actions (/AA /V) were detected, but "
+                    "document-level JavaScript is present. It cannot be confirmed "
+                    "statically that JavaScript is not performing error detection. "
+                    "If automatic error detection does exist, it cannot be confirmed "
+                    "that correction suggestions are provided where known. "
+                    "Manual review of all JavaScript is required."
+                ),
+                location={"scope": "document", "page": None},
+                severity="needs_review",
+                recommendation=(
+                    "Review all document-level JavaScript. If any script performs "
+                    "input validation, confirm that correction suggestions are "
+                    "provided where the correction is known "
+                    "(e.g. 'must be a valid email address'), unless doing so would "
+                    "jeopardize security or purpose."
                 ),
             )
         )
@@ -1295,7 +1349,7 @@ def check_4_1_2_name_role_value(doc_json):
         if not field.get("appearance_state"):
             field_id = field.get("id", "unknown")
             page_no  = _page(field["page_index"]) if field.get("page_index") is not None else None
-            is_radio = bool(ff & (1 << 15))      
+            is_radio = bool(ff & (1 << 15))      # PDF spec bit 16 (0-indexed: 15)
             kind     = "radio button" if is_radio else "checkbox"
             issues.append(
                 make_issue(
