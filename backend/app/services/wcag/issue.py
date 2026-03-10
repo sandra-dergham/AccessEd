@@ -1,6 +1,6 @@
 from typing import Any, Dict, Literal
 
-Severity = Literal["low", "medium", "high"]
+Severity = Literal["pass", "not_applicable", "needs_review", "low", "medium", "high"]
 
 def make_issue(
     criterion: str,
