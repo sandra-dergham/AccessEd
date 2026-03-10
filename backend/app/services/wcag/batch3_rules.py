@@ -322,7 +322,7 @@ def check_2_2_2_pause_stop_hide(doc_json):
 
     This criterion covers two distinct sub-cases, each with its own conditions:
 
-    Sub-case A – Moving, blinking, or scrolling content:
+    Sub-case A - Moving, blinking, or scrolling content:
       A violation exists only if ALL of the following are true:
         (1) the content starts automatically
         (2) it lasts more than 5 seconds
@@ -330,7 +330,7 @@ def check_2_2_2_pause_stop_hide(doc_json):
         (4) no mechanism exists to pause, stop, or hide it
       Exception: if the movement is essential to the activity, no violation.
 
-    Sub-case B – Auto-updating content:
+    Sub-case B - Auto-updating content:
       A violation exists only if ALL of the following are true:
         (1) the content starts automatically
         (2) it is presented in parallel with other content
@@ -1295,7 +1295,7 @@ def check_4_1_2_name_role_value(doc_json):
         if not field.get("appearance_state"):
             field_id = field.get("id", "unknown")
             page_no  = _page(field["page_index"]) if field.get("page_index") is not None else None
-            is_radio = bool(ff & (1 << 15))      # PDF spec bit 16 (0-indexed: 15)
+            is_radio = bool(ff & (1 << 15))      
             kind     = "radio button" if is_radio else "checkbox"
             issues.append(
                 make_issue(
