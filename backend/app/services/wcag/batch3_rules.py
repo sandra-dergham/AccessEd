@@ -27,12 +27,6 @@ def _bbox_overlap(a, b):
 
 
 _NOT_APPLICABLE = [
-
-
-
-
-
-
     {
         "criterion": "4.1.1",
         "title": "Parsing",
@@ -583,7 +577,6 @@ def check_3_3_1_error_identification(doc_json):
         )
         return issues
 
-    # Only interactive (non-read-only) fields can have input errors
     interactive_fields = [f for f in acroform_fields if not f.get("read_only")]
 
     if not interactive_fields:
@@ -602,7 +595,6 @@ def check_3_3_1_error_identification(doc_json):
         )
         return issues
 
-    # Split fields into those with and without validation actions
     fields_with_validation = [
         f for f in interactive_fields
         if f.get("validation_actions")
@@ -668,8 +660,7 @@ def check_3_3_1_error_identification(doc_json):
             )
         )
 
-    # Mixed coverage: unvalidated fields alongside validated ones —
-    # criterion still doesn't trigger for unvalidated fields, so not_applicable
+    # Mixed: unvalidated fields alongside validated ones
     if fields_without_validation and fields_with_validation:
         unvalidated_list = ", ".join(
             f"'{f.get('name') or f['id']}'" for f in fields_without_validation
@@ -717,22 +708,17 @@ def _is_descriptive_field_name(name: str) -> bool:
     if not name:
         return False
 
-    # Strip whitespace
     stripped = name.strip()
 
-    # Purely numeric
     if stripped.isdigit():
         return False
 
-    # Auto-generated path pattern e.g. "topmostSubform[0].Page1[0].field3[1]"
     if "[" in stripped or "]" in stripped:
         return False
 
-    # Too short
     if len(stripped) < 3:
         return False
 
-    # No vowels (case-insensitive)
     if not any(c in "aeiouAEIOU" for c in stripped):
         return False
 
@@ -765,7 +751,6 @@ def check_3_3_4_error_prevention(doc_json):
     submit_actions  = interactivity.get("submit_actions", [])
     acroform_fields = interactivity.get("acroform_fields", [])
 
-    # not_applicable: no form or no submit action
     if not has_acroform or not has_submit:
         issues.append(
             make_issue(
@@ -783,10 +768,9 @@ def check_3_3_4_error_prevention(doc_json):
         )
         return issues
 
-    # Submit action exists — check for partial "Checked" signal
-    interactive_fields      = [f for f in acroform_fields if not f.get("read_only")]
-    fields_with_validation  = [f for f in interactive_fields if f.get("validation_actions")]
-    has_partial_checked     = len(fields_with_validation) > 0
+    interactive_fields     = [f for f in acroform_fields if not f.get("read_only")]
+    fields_with_validation = [f for f in interactive_fields if f.get("validation_actions")]
+    has_partial_checked    = len(fields_with_validation) > 0
 
     submit_urls = ", ".join(
         a.get("url") or "unknown URL"
@@ -863,7 +847,6 @@ def check_3_3_3_error_suggestion(doc_json):
     acroform_fields = interactivity.get("acroform_fields", [])
     has_js          = interactivity.get("has_javascript", False)
 
-    # A: no form fields
     if not has_acroform or not acroform_fields:
         issues.append(
             make_issue(
@@ -903,7 +886,6 @@ def check_3_3_3_error_suggestion(doc_json):
         if f.get("validation_actions")
     ]
 
-    # B: no validation anywhere — condition (1) never triggered
     if not fields_with_validation and not has_js:
         issues.append(
             make_issue(
@@ -925,23 +907,17 @@ def check_3_3_3_error_suggestion(doc_json):
         )
         return issues
 
-    # C: validation exists — classify fields as sensitive or non-sensitive
     _SENSITIVE_PATTERNS = {
         "password", "passwd", "pwd", "pin", "secret", "token",
         "passphrase", "credential", "auth"
     }
 
     def _is_sensitive(field: Dict[str, Any]) -> bool:
-        # Signature fields are always sensitive
         if field.get("type") == "Sig":
             return True
-        # Name pattern match (case-insensitive)
-        name = (field.get("name") or "").lower()
+        name    = (field.get("name")    or "").lower()
         tooltip = (field.get("tooltip") or "").lower()
-        return any(
-            p in name or p in tooltip
-            for p in _SENSITIVE_PATTERNS
-        )
+        return any(p in name or p in tooltip for p in _SENSITIVE_PATTERNS)
 
     sensitive_fields     = [f for f in fields_with_validation if _is_sensitive(f)]
     non_sensitive_fields = [f for f in fields_with_validation if not _is_sensitive(f)]
@@ -1123,8 +1099,11 @@ def check_4_1_2_name_role_value(doc_json):
       A) Untagged PDF → no element has a programmatically determinable role
       B) Links with no accessible name (no overlapping text, no tagged name)
       C) Figure nodes with no /Alt or /ActualText
-      D) Form fields with no Widget role in the tag tree (role missing)
-      E) Form fields with no accessible name and no tag covering them
+         Note: /Alt = "" (empty string) means intentionally decorative — pass.
+         Only /Alt being absent entirely (None) is a violation.
+      D) Fewer Widget nodes in tag tree than interactive fields → document-level
+         issue, checked once outside the field loop
+      E) Form fields with no accessible name (/TU and /T both absent)
 
     Requirement 2 — States, properties, and values:
       F) Checkbox/radio fields (type Btn, not push-button) with no /AS
@@ -1216,10 +1195,13 @@ def check_4_1_2_name_role_value(doc_json):
             )
 
     # ── C: Figure nodes without accessible names ──────────────────────────────
+    # /Alt = None  → key absent entirely → violation
+    # /Alt = ""    → intentionally decorative → pass (screen reader skips it)
+    # /Alt = "..." → descriptive alt text → pass
     for node in flat_nodes:
         if node.get("role") != "Figure":
             continue
-        if not node.get("alt") and not node.get("actual_text"):
+        if node.get("alt") is None and not node.get("actual_text"):
             issues.append(
                 make_issue(
                     criterion="4.1.2",
@@ -1237,49 +1219,44 @@ def check_4_1_2_name_role_value(doc_json):
                     recommendation=(
                         "Add an /Alt attribute to the <Figure> tag describing the "
                         "image content, or supply /ActualText if the figure contains "
-                        "embedded text that should be read aloud."
+                        "embedded text that should be read aloud. "
+                        "If the figure is purely decorative, set /Alt to an empty "
+                        "string (\"\") so assistive technologies know to skip it."
                     ),
                 )
             )
 
-    # ── D & E: form fields — role and name ────────────────────────────────────
-    acroform_fields = interactivity.get("acroform_fields", [])
-    interactive_fields = [f for f in acroform_fields if not f.get("read_only")]
-
-    # Count Widget nodes in the tag tree
+    # ── D: Widget count vs field count — document-level, outside field loop ───
+    acroform_fields      = interactivity.get("acroform_fields", [])
+    interactive_fields   = [f for f in acroform_fields if not f.get("read_only")]
     widget_nodes_in_tree = [n for n in flat_nodes if n.get("role") == "Widget"]
 
-    for field in interactive_fields:
-        field_id = field.get("id", "unknown")
-        page_no  = _page(field["page_index"]) if field.get("page_index") is not None else None
-
-        # D: no Widget role in tag tree for this field
-        # Heuristic: if there are fewer Widget nodes than interactive fields,
-        # some fields are not represented in the tag tree
-        if len(widget_nodes_in_tree) < len(interactive_fields):
-            issues.append(
-                make_issue(
-                    criterion="4.1.2",
-                    issue=(
-                        f"The PDF has {len(interactive_fields)} interactive form "
-                        f"field(s) but only {len(widget_nodes_in_tree)} Widget node(s) "
-                        "in the tag tree. Some form fields have no programmatically "
-                        "determinable role — assistive technologies cannot identify "
-                        "them as form controls."
-                    ),
-                    location={"scope": "document", "page": None},
-                    severity="high",
-                    recommendation=(
-                        "Ensure every interactive form field has a corresponding "
-                        "Widget tag in the structure tree. Re-export or remediate "
-                        "the PDF so all form fields are properly tagged."
-                    ),
-                )
+    if interactive_fields and len(widget_nodes_in_tree) < len(interactive_fields):
+        issues.append(
+            make_issue(
+                criterion="4.1.2",
+                issue=(
+                    f"The PDF has {len(interactive_fields)} interactive form "
+                    f"field(s) but only {len(widget_nodes_in_tree)} Widget node(s) "
+                    "in the tag tree. Some form fields have no programmatically "
+                    "determinable role — assistive technologies cannot identify "
+                    "them as form controls."
+                ),
+                location={"scope": "document", "page": None},
+                severity="high",
+                recommendation=(
+                    "Ensure every interactive form field has a corresponding "
+                    "Widget tag in the structure tree. Re-export or remediate "
+                    "the PDF so all form fields are properly tagged."
+                ),
             )
-            break  # One document-level issue is sufficient
+        )
 
-        # E: field has no accessible name (no /TU, no /T)
+    # ── E: per-field — fields with no accessible name ─────────────────────────
+    for field in interactive_fields:
         if not field.get("tooltip") and not field.get("name"):
+            field_id = field.get("id", "unknown")
+            page_no  = _page(field["page_index"]) if field.get("page_index") is not None else None
             issues.append(
                 make_issue(
                     criterion="4.1.2",
@@ -1310,16 +1287,15 @@ def check_4_1_2_name_role_value(doc_json):
         if field.get("type") != "Btn":
             continue
 
-        ff = field.get("flags", 0)
-        is_push_button = bool(ff & (1 << 16))  
+        ff             = field.get("flags", 0)
+        is_push_button = bool(ff & (1 << 16))  # PDF spec bit 17 (0-indexed: 16)
         if is_push_button:
             continue  # push buttons don't have checked state
 
-        page_no = _page(field["page_index"]) if field.get("page_index") is not None else None
-
         if not field.get("appearance_state"):
             field_id = field.get("id", "unknown")
-            is_radio = bool(ff & (1 << 14))  
+            page_no  = _page(field["page_index"]) if field.get("page_index") is not None else None
+            is_radio = bool(ff & (1 << 15))      # PDF spec bit 16 (0-indexed: 15)
             kind     = "radio button" if is_radio else "checkbox"
             issues.append(
                 make_issue(
