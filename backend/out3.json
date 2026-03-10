@@ -1,0 +1,1220 @@
+{
+  "document": {
+    "metadata": {
+      "filename": "batch2_good_test.pdf",
+      "title": "Accessible Batch 2 Test Document",
+      "author": "OpenAI",
+      "subject": "Batch 2 validation PDF",
+      "keywords": "",
+      "file_hash_sha256": "c7915dd70c31db257ca865e96ff30849334e9bd54b4a240ee9f16cad69bc69b3",
+      "page_count": 3,
+      "coordinate_system": {
+        "units": "pt",
+        "note": "PyMuPDF bboxes stored in document.*.bbox; pdfminer raw bboxes stored in text_blocks[].bbox_pdfminer"
+      }
+    },
+    "pages": [
+      {
+        "page_index": 0,
+        "width": 595.2755737304688,
+        "height": 841.8897705078125,
+        "rotation": 0
+      },
+      {
+        "page_index": 1,
+        "width": 595.2755737304688,
+        "height": 841.8897705078125,
+        "rotation": 0
+      },
+      {
+        "page_index": 2,
+        "width": 595.2755737304688,
+        "height": 841.8897705078125,
+        "rotation": 0
+      }
+    ],
+    "text_spans": [
+      {
+        "id": "span_p0_s0",
+        "page_index": 0,
+        "bbox": [
+          50.0,
+          20.489768981933594,
+          400.0999450683594,
+          48.02976989746094
+        ],
+        "text": "Batch 2 Accessibility Test Document",
+        "detected_language": "en",
+        "font": {
+          "name": "Helvetica-Bold",
+          "size": 20.0,
+          "flags": 16
+        },
+        "color": {
+          "fill_rgb": [
+            0,
+            0,
+            0
+          ]
+        },
+        "background_estimate": {
+          "bg_rgb": [
+            255,
+            255,
+            255
+          ],
+          "method": "sampled_median",
+          "samples": 64
+        },
+        "contrast": {
+          "ratio": 21.0,
+          "passes_4_5_1": true,
+          "passes_3_1_large": true,
+          "large_text_assumed": true
+        }
+      },
+      {
+        "id": "span_p0_s1",
+        "page_index": 0,
+        "bbox": [
+          50.0,
+          60.06476974487305,
+          438.2230529785156,
+          75.17877197265625
+        ],
+        "text": "This PDF is intentionally designed to avoid most Batch 2 violations. It includes a",
+        "detected_language": "en",
+        "font": {
+          "name": "Helvetica",
+          "size": 11.0,
+          "flags": 0
+        },
+        "color": {
+          "fill_rgb": [
+            0,
+            0,
+            0
+          ]
+        },
+        "background_estimate": {
+          "bg_rgb": [
+            255,
+            255,
+            255
+          ],
+          "method": "sampled_median",
+          "samples": 64
+        },
+        "contrast": {
+          "ratio": 21.0,
+          "passes_4_5_1": true,
+          "passes_3_1_large": null,
+          "large_text_assumed": false
+        }
+      },
+      {
+        "id": "span_p0_s2",
+        "page_index": 0,
+        "bbox": [
+          50.0,
+          76.06477355957031,
+          430.8969421386719,
+          91.17877197265625
+        ],
+        "text": "meaningful title, a valid document language, descriptive headings, bookmarks,",
+        "detected_language": "en",
+        "font": {
+          "name": "Helvetica",
+          "size": 11.0,
+          "flags": 0
+        },
+        "color": {
+          "fill_rgb": [
+            0,
+            0,
+            0
+          ]
+        },
+        "background_estimate": {
+          "bg_rgb": [
+            255,
+            255,
+            255
+          ],
+          "method": "sampled_median",
+          "samples": 64
+        },
+        "contrast": {
+          "ratio": 21.0,
+          "passes_4_5_1": true,
+          "passes_3_1_large": null,
+          "large_text_assumed": false
+        }
+      },
+      {
+        "id": "span_p0_s3",
+        "page_index": 0,
+        "bbox": [
+          50.0,
+          92.06477355957031,
+          262.761962890625,
+          107.17877197265625
+        ],
+        "text": "internal navigation, and descriptive link text.",
+        "detected_language": "en",
+        "font": {
+          "name": "Helvetica",
+          "size": 11.0,
+          "flags": 0
+        },
+        "color": {
+          "fill_rgb": [
+            0,
+            0,
+            0
+          ]
+        },
+        "background_estimate": {
+          "bg_rgb": [
+            255,
+            255,
+            255
+          ],
+          "method": "sampled_median",
+          "samples": 64
+        },
+        "contrast": {
+          "ratio": 21.0,
+          "passes_4_5_1": true,
+          "passes_3_1_large": null,
+          "large_text_assumed": false
+        }
+      },
+      {
+        "id": "span_p0_s4",
+        "page_index": 0,
+        "bbox": [
+          50.0,
+          112.9097671508789,
+          121.5680160522461,
+          132.18777465820312
+        ],
+        "text": "Navigation",
+        "detected_language": "en",
+        "font": {
+          "name": "Helvetica-Bold",
+          "size": 14.0,
+          "flags": 16
+        },
+        "color": {
+          "fill_rgb": [
+            0,
+            0,
+            0
+          ]
+        },
+        "background_estimate": {
+          "bg_rgb": [
+            255,
+            255,
+            255
+          ],
+          "method": "sampled_median",
+          "samples": 64
+        },
+        "contrast": {
+          "ratio": 21.0,
+          "passes_4_5_1": true,
+          "passes_3_1_large": null,
+          "large_text_assumed": false
+        }
+      },
+      {
+        "id": "span_p0_s5",
+        "page_index": 0,
+        "bbox": [
+          50.0,
+          138.0647735595703,
+          178.40296936035156,
+          153.17877197265625
+        ],
+        "text": "Go to the Methods section",
+        "detected_language": "en",
+        "font": {
+          "name": "Helvetica",
+          "size": 11.0,
+          "flags": 0
+        },
+        "color": {
+          "fill_rgb": [
+            0,
+            0,
+            0
+          ]
+        },
+        "background_estimate": {
+          "bg_rgb": [
+            255,
+            255,
+            255
+          ],
+          "method": "sampled_median",
+          "samples": 64
+        },
+        "contrast": {
+          "ratio": 21.0,
+          "passes_4_5_1": true,
+          "passes_3_1_large": null,
+          "large_text_assumed": false
+        }
+      },
+      {
+        "id": "span_p0_s6",
+        "page_index": 0,
+        "bbox": [
+          50.0,
+          160.0647735595703,
+          207.0909881591797,
+          175.17877197265625
+        ],
+        "text": "Visit the official WCAG overview",
+        "detected_language": "en",
+        "font": {
+          "name": "Helvetica",
+          "size": 11.0,
+          "flags": 0
+        },
+        "color": {
+          "fill_rgb": [
+            0,
+            0,
+            255
+          ]
+        },
+        "background_estimate": {
+          "bg_rgb": [
+            255,
+            255,
+            255
+          ],
+          "method": "sampled_median",
+          "samples": 64
+        },
+        "contrast": {
+          "ratio": 8.592,
+          "passes_4_5_1": true,
+          "passes_3_1_large": null,
+          "large_text_assumed": false
+        }
+      },
+      {
+        "id": "span_p0_s7",
+        "page_index": 0,
+        "bbox": [
+          50.0,
+          188.0647735595703,
+          468.8140563964844,
+          203.17877197265625
+        ],
+        "text": "The document body uses normal selectable text rather than images of text. Paragraph",
+        "detected_language": "en",
+        "font": {
+          "name": "Helvetica",
+          "size": 11.0,
+          "flags": 0
+        },
+        "color": {
+          "fill_rgb": [
+            0,
+            0,
+            0
+          ]
+        },
+        "background_estimate": {
+          "bg_rgb": [
+            255,
+            255,
+            255
+          ],
+          "method": "sampled_median",
+          "samples": 64
+        },
+        "contrast": {
+          "ratio": 21.0,
+          "passes_4_5_1": true,
+          "passes_3_1_large": null,
+          "large_text_assumed": false
+        }
+      },
+      {
+        "id": "span_p0_s8",
+        "page_index": 0,
+        "bbox": [
+          50.0,
+          204.0647735595703,
+          479.2310485839844,
+          219.17877197265625
+        ],
+        "text": "spacing and line spacing are comfortable, and the content does not rely on color, shape,",
+        "detected_language": "en",
+        "font": {
+          "name": "Helvetica",
+          "size": 11.0,
+          "flags": 0
+        },
+        "color": {
+          "fill_rgb": [
+            0,
+            0,
+            0
+          ]
+        },
+        "background_estimate": {
+          "bg_rgb": [
+            255,
+            255,
+            255
+          ],
+          "method": "sampled_median",
+          "samples": 64
+        },
+        "contrast": {
+          "ratio": 21.0,
+          "passes_4_5_1": true,
+          "passes_3_1_large": null,
+          "large_text_assumed": false
+        }
+      },
+      {
+        "id": "span_p0_s9",
+        "page_index": 0,
+        "bbox": [
+          50.0,
+          220.0647735595703,
+          279.2509460449219,
+          235.17877197265625
+        ],
+        "text": "or screen position to communicate instructions.",
+        "detected_language": "en",
+        "font": {
+          "name": "Helvetica",
+          "size": 11.0,
+          "flags": 0
+        },
+        "color": {
+          "fill_rgb": [
+            0,
+            0,
+            0
+          ]
+        },
+        "background_estimate": {
+          "bg_rgb": [
+            255,
+            255,
+            255
+          ],
+          "method": "sampled_median",
+          "samples": 64
+        },
+        "contrast": {
+          "ratio": 21.0,
+          "passes_4_5_1": true,
+          "passes_3_1_large": null,
+          "large_text_assumed": false
+        }
+      },
+      {
+        "id": "span_p1_s0",
+        "page_index": 1,
+        "bbox": [
+          50.0,
+          22.629770278930664,
+          123.99801635742188,
+          47.415771484375
+        ],
+        "text": "Methods",
+        "detected_language": "cy",
+        "font": {
+          "name": "Helvetica-Bold",
+          "size": 18.0,
+          "flags": 16
+        },
+        "color": {
+          "fill_rgb": [
+            0,
+            0,
+            0
+          ]
+        },
+        "background_estimate": {
+          "bg_rgb": [
+            255,
+            255,
+            255
+          ],
+          "method": "sampled_median",
+          "samples": 64
+        },
+        "contrast": {
+          "ratio": 21.0,
+          "passes_4_5_1": true,
+          "passes_3_1_large": true,
+          "large_text_assumed": true
+        }
+      },
+      {
+        "id": "span_p1_s1",
+        "page_index": 1,
+        "bbox": [
+          50.0,
+          60.06476974487305,
+          461.4659423828125,
+          75.17877197265625
+        ],
+        "text": "This section demonstrates logical reading order, conventional heading structure, and",
+        "detected_language": "en",
+        "font": {
+          "name": "Helvetica",
+          "size": 11.0,
+          "flags": 0
+        },
+        "color": {
+          "fill_rgb": [
+            0,
+            0,
+            0
+          ]
+        },
+        "background_estimate": {
+          "bg_rgb": [
+            255,
+            255,
+            255
+          ],
+          "method": "sampled_median",
+          "samples": 64
+        },
+        "contrast": {
+          "ratio": 21.0,
+          "passes_4_5_1": true,
+          "passes_3_1_large": null,
+          "large_text_assumed": false
+        }
+      },
+      {
+        "id": "span_p1_s2",
+        "page_index": 1,
+        "bbox": [
+          50.0,
+          76.06477355957031,
+          493.2889709472656,
+          91.17877197265625
+        ],
+        "text": "standard paragraph layout. It contains no forms, no vague link text, and no mixed-language",
+        "detected_language": "en",
+        "font": {
+          "name": "Helvetica",
+          "size": 11.0,
+          "flags": 0
+        },
+        "color": {
+          "fill_rgb": [
+            0,
+            0,
+            0
+          ]
+        },
+        "background_estimate": {
+          "bg_rgb": [
+            255,
+            255,
+            255
+          ],
+          "method": "sampled_median",
+          "samples": 64
+        },
+        "contrast": {
+          "ratio": 21.0,
+          "passes_4_5_1": true,
+          "passes_3_1_large": null,
+          "large_text_assumed": false
+        }
+      },
+      {
+        "id": "span_p1_s3",
+        "page_index": 1,
+        "bbox": [
+          50.0,
+          92.06477355957031,
+          100.13799285888672,
+          107.17877197265625
+        ],
+        "text": "passages.",
+        "detected_language": "fr",
+        "font": {
+          "name": "Helvetica",
+          "size": 11.0,
+          "flags": 0
+        },
+        "color": {
+          "fill_rgb": [
+            0,
+            0,
+            0
+          ]
+        },
+        "background_estimate": {
+          "bg_rgb": [
+            255,
+            255,
+            255
+          ],
+          "method": "sampled_median",
+          "samples": 64
+        },
+        "contrast": {
+          "ratio": 21.0,
+          "passes_4_5_1": true,
+          "passes_3_1_large": null,
+          "large_text_assumed": false
+        }
+      },
+      {
+        "id": "span_p1_s4",
+        "page_index": 1,
+        "bbox": [
+          50.0,
+          112.9097671508789,
+          119.2440185546875,
+          132.18777465820312
+        ],
+        "text": "Procedure",
+        "detected_language": "en",
+        "font": {
+          "name": "Helvetica-Bold",
+          "size": 14.0,
+          "flags": 16
+        },
+        "color": {
+          "fill_rgb": [
+            0,
+            0,
+            0
+          ]
+        },
+        "background_estimate": {
+          "bg_rgb": [
+            255,
+            255,
+            255
+          ],
+          "method": "sampled_median",
+          "samples": 64
+        },
+        "contrast": {
+          "ratio": 21.0,
+          "passes_4_5_1": true,
+          "passes_3_1_large": null,
+          "large_text_assumed": false
+        }
+      },
+      {
+        "id": "span_p1_s5",
+        "page_index": 1,
+        "bbox": [
+          50.0,
+          138.0647735595703,
+          499.9549255371094,
+          153.17877197265625
+        ],
+        "text": "Users can navigate this document through bookmarks and internal links. Those mechanisms",
+        "detected_language": "en",
+        "font": {
+          "name": "Helvetica",
+          "size": 11.0,
+          "flags": 0
+        },
+        "color": {
+          "fill_rgb": [
+            0,
+            0,
+            0
+          ]
+        },
+        "background_estimate": {
+          "bg_rgb": [
+            255,
+            255,
+            255
+          ],
+          "method": "sampled_median",
+          "samples": 64
+        },
+        "contrast": {
+          "ratio": 21.0,
+          "passes_4_5_1": true,
+          "passes_3_1_large": null,
+          "large_text_assumed": false
+        }
+      },
+      {
+        "id": "span_p1_s6",
+        "page_index": 1,
+        "bbox": [
+          50.0,
+          154.0647735595703,
+          416.21197509765625,
+          169.17877197265625
+        ],
+        "text": "help test that the Bypass Blocks and Multiple Ways heuristics do not trigger",
+        "detected_language": "en",
+        "font": {
+          "name": "Helvetica",
+          "size": 11.0,
+          "flags": 0
+        },
+        "color": {
+          "fill_rgb": [
+            0,
+            0,
+            0
+          ]
+        },
+        "background_estimate": {
+          "bg_rgb": [
+            255,
+            255,
+            255
+          ],
+          "method": "sampled_median",
+          "samples": 64
+        },
+        "contrast": {
+          "ratio": 21.0,
+          "passes_4_5_1": true,
+          "passes_3_1_large": null,
+          "large_text_assumed": false
+        }
+      },
+      {
+        "id": "span_p1_s7",
+        "page_index": 1,
+        "bbox": [
+          50.0,
+          170.0647735595703,
+          325.7039489746094,
+          185.17877197265625
+        ],
+        "text": "unnecessarily for a well-structured multi-page document.",
+        "detected_language": "en",
+        "font": {
+          "name": "Helvetica",
+          "size": 11.0,
+          "flags": 0
+        },
+        "color": {
+          "fill_rgb": [
+            0,
+            0,
+            0
+          ]
+        },
+        "background_estimate": {
+          "bg_rgb": [
+            255,
+            255,
+            255
+          ],
+          "method": "sampled_median",
+          "samples": 64
+        },
+        "contrast": {
+          "ratio": 21.0,
+          "passes_4_5_1": true,
+          "passes_3_1_large": null,
+          "large_text_assumed": false
+        }
+      },
+      {
+        "id": "span_p1_s8",
+        "page_index": 1,
+        "bbox": [
+          50.0,
+          196.0647735595703,
+          174.12396240234375,
+          211.17877197265625
+        ],
+        "text": "Return to the Introduction",
+        "detected_language": "en",
+        "font": {
+          "name": "Helvetica",
+          "size": 11.0,
+          "flags": 0
+        },
+        "color": {
+          "fill_rgb": [
+            0,
+            0,
+            255
+          ]
+        },
+        "background_estimate": {
+          "bg_rgb": [
+            255,
+            255,
+            255
+          ],
+          "method": "sampled_median",
+          "samples": 64
+        },
+        "contrast": {
+          "ratio": 8.592,
+          "passes_4_5_1": true,
+          "passes_3_1_large": null,
+          "large_text_assumed": false
+        }
+      },
+      {
+        "id": "span_p2_s0",
+        "page_index": 2,
+        "bbox": [
+          50.0,
+          22.629770278930664,
+          148.010009765625,
+          47.415771484375
+        ],
+        "text": "Conclusion",
+        "detected_language": "en",
+        "font": {
+          "name": "Helvetica-Bold",
+          "size": 18.0,
+          "flags": 16
+        },
+        "color": {
+          "fill_rgb": [
+            0,
+            0,
+            0
+          ]
+        },
+        "background_estimate": {
+          "bg_rgb": [
+            255,
+            255,
+            255
+          ],
+          "method": "sampled_median",
+          "samples": 64
+        },
+        "contrast": {
+          "ratio": 21.0,
+          "passes_4_5_1": true,
+          "passes_3_1_large": true,
+          "large_text_assumed": true
+        }
+      },
+      {
+        "id": "span_p2_s1",
+        "page_index": 2,
+        "bbox": [
+          50.0,
+          60.06476974487305,
+          479.1868896484375,
+          75.17877197265625
+        ],
+        "text": "Expected behavior for this PDF: your Batch 2 checker should ideally avoid flagging rules",
+        "detected_language": "en",
+        "font": {
+          "name": "Helvetica",
+          "size": 11.0,
+          "flags": 0
+        },
+        "color": {
+          "fill_rgb": [
+            0,
+            0,
+            0
+          ]
+        },
+        "background_estimate": {
+          "bg_rgb": [
+            255,
+            255,
+            255
+          ],
+          "method": "sampled_median",
+          "samples": 64
+        },
+        "contrast": {
+          "ratio": 21.0,
+          "passes_4_5_1": true,
+          "passes_3_1_large": null,
+          "large_text_assumed": false
+        }
+      },
+      {
+        "id": "span_p2_s2",
+        "page_index": 2,
+        "bbox": [
+          50.0,
+          76.06477355957031,
+          465.2060852050781,
+          91.17877197265625
+        ],
+        "text": "such as 2.4.2 Page Titled, 2.4.4 Link Purpose, 3.1.1 Language of Page, 2.4.1 Bypass",
+        "detected_language": "en",
+        "font": {
+          "name": "Helvetica",
+          "size": 11.0,
+          "flags": 0
+        },
+        "color": {
+          "fill_rgb": [
+            0,
+            0,
+            0
+          ]
+        },
+        "background_estimate": {
+          "bg_rgb": [
+            255,
+            255,
+            255
+          ],
+          "method": "sampled_median",
+          "samples": 64
+        },
+        "contrast": {
+          "ratio": 21.0,
+          "passes_4_5_1": true,
+          "passes_3_1_large": null,
+          "large_text_assumed": false
+        }
+      },
+      {
+        "id": "span_p2_s3",
+        "page_index": 2,
+        "bbox": [
+          50.0,
+          92.06477355957031,
+          462.7090148925781,
+          107.17877197265625
+        ],
+        "text": "Blocks, and 2.4.5 Multiple Ways. Because ReportLab does not generate tagged PDF",
+        "detected_language": "en",
+        "font": {
+          "name": "Helvetica",
+          "size": 11.0,
+          "flags": 0
+        },
+        "color": {
+          "fill_rgb": [
+            0,
+            0,
+            0
+          ]
+        },
+        "background_estimate": {
+          "bg_rgb": [
+            255,
+            255,
+            255
+          ],
+          "method": "sampled_median",
+          "samples": 64
+        },
+        "contrast": {
+          "ratio": 21.0,
+          "passes_4_5_1": true,
+          "passes_3_1_large": null,
+          "large_text_assumed": false
+        }
+      },
+      {
+        "id": "span_p2_s4",
+        "page_index": 2,
+        "bbox": [
+          50.0,
+          108.06477355957031,
+          279.27294921875,
+          123.17877197265625
+        ],
+        "text": "structure by default, 1.3.1 may still be reported.",
+        "detected_language": "en",
+        "font": {
+          "name": "Helvetica",
+          "size": 11.0,
+          "flags": 0
+        },
+        "color": {
+          "fill_rgb": [
+            0,
+            0,
+            0
+          ]
+        },
+        "background_estimate": {
+          "bg_rgb": [
+            255,
+            255,
+            255
+          ],
+          "method": "sampled_median",
+          "samples": 64
+        },
+        "contrast": {
+          "ratio": 21.0,
+          "passes_4_5_1": true,
+          "passes_3_1_large": null,
+          "large_text_assumed": false
+        }
+      }
+    ],
+    "text_blocks": [
+      {
+        "id": "block_p0_0",
+        "page_index": 0,
+        "bbox_pdfminer": [
+          50.0,
+          795.86,
+          400.1000000000001,
+          815.86
+        ],
+        "text": "Batch 2 Accessibility Test Document",
+        "span_ids": [
+          "span_p0_s0"
+        ],
+        "bbox": [
+          50.0,
+          26.029770507812486,
+          400.1000000000001,
+          46.029770507812486
+        ]
+      },
+      {
+        "id": "block_p0_1",
+        "page_index": 0,
+        "bbox_pdfminer": [
+          50.0,
+          607.723,
+          479.2309999999998,
+          778.723
+        ],
+        "text": "This PDF is intentionally designed to avoid most Batch 2 violations. It includes a\nmeaningful title, a valid document language, descriptive headings, bookmarks,\ninternal navigation, and descriptive link text.\nNavigation\nGo to the Methods section\nVisit the official WCAG overview\nThe document body uses normal selectable text rather than images of text. Paragraph\nspacing and line spacing are comfortable, and the content does not rely on color, shape,\nor screen position to communicate instructions.",
+        "span_ids": [
+          "span_p0_s1",
+          "span_p0_s2",
+          "span_p0_s3",
+          "span_p0_s4",
+          "span_p0_s5",
+          "span_p0_s6",
+          "span_p0_s7",
+          "span_p0_s8",
+          "span_p0_s9"
+        ],
+        "bbox": [
+          50.0,
+          63.166770507812544,
+          479.2309999999998,
+          234.16677050781254
+        ]
+      },
+      {
+        "id": "block_p1_2",
+        "page_index": 1,
+        "bbox_pdfminer": [
+          50.0,
+          796.274,
+          123.99799999999999,
+          814.274
+        ],
+        "text": "Methods",
+        "span_ids": [
+          "span_p1_s0"
+        ],
+        "bbox": [
+          50.0,
+          27.6157705078125,
+          123.99799999999999,
+          45.6157705078125
+        ]
+      },
+      {
+        "id": "block_p1_3",
+        "page_index": 1,
+        "bbox_pdfminer": [
+          50.0,
+          631.723,
+          499.95500000000004,
+          778.723
+        ],
+        "text": "This section demonstrates logical reading order, conventional heading structure, and\nstandard paragraph layout. It contains no forms, no vague link text, and no mixed-language\npassages.\nProcedure\nUsers can navigate this document through bookmarks and internal links. Those mechanisms\nhelp test that the Bypass Blocks and Multiple Ways heuristics do not trigger\nunnecessarily for a well-structured multi-page document.\nReturn to the Introduction",
+        "span_ids": [
+          "span_p1_s1",
+          "span_p1_s2",
+          "span_p1_s3",
+          "span_p1_s4",
+          "span_p1_s5",
+          "span_p1_s6",
+          "span_p1_s7",
+          "span_p1_s8"
+        ],
+        "bbox": [
+          50.0,
+          63.166770507812544,
+          499.95500000000004,
+          210.16677050781254
+        ]
+      },
+      {
+        "id": "block_p2_4",
+        "page_index": 2,
+        "bbox_pdfminer": [
+          50.0,
+          796.274,
+          148.01,
+          814.274
+        ],
+        "text": "Conclusion",
+        "span_ids": [
+          "span_p2_s0"
+        ],
+        "bbox": [
+          50.0,
+          27.6157705078125,
+          148.01,
+          45.6157705078125
+        ]
+      },
+      {
+        "id": "block_p2_5",
+        "page_index": 2,
+        "bbox_pdfminer": [
+          50.0,
+          719.723,
+          479.18699999999984,
+          778.723
+        ],
+        "text": "Expected behavior for this PDF: your Batch 2 checker should ideally avoid flagging rules\nsuch as 2.4.2 Page Titled, 2.4.4 Link Purpose, 3.1.1 Language of Page, 2.4.1 Bypass\nBlocks, and 2.4.5 Multiple Ways. Because ReportLab does not generate tagged PDF\nstructure by default, 1.3.1 may still be reported.",
+        "span_ids": [
+          "span_p2_s1",
+          "span_p2_s2",
+          "span_p2_s3",
+          "span_p2_s4"
+        ],
+        "bbox": [
+          50.0,
+          63.166770507812544,
+          479.18699999999984,
+          122.16677050781254
+        ]
+      }
+    ],
+    "images": {
+      "assets": [],
+      "occurrences": []
+    },
+    "graphics": [],
+    "links": [
+      {
+        "id": "link_p0_0",
+        "page_index": 0,
+        "bbox": [
+          50.0,
+          137.8897705078125,
+          178.4029998779297,
+          151.8897705078125
+        ],
+        "kind": "internal",
+        "type": "internal",
+        "target": "page_2",
+        "uri": null
+      },
+      {
+        "id": "link_p0_1",
+        "page_index": 0,
+        "bbox": [
+          50.0,
+          159.8897705078125,
+          207.09100341796875,
+          173.8897705078125
+        ],
+        "kind": "uri",
+        "type": "uri",
+        "target": "https://www.w3.org/WAI/standards-guidelines/wcag/",
+        "uri": "https://www.w3.org/WAI/standards-guidelines/wcag/"
+      },
+      {
+        "id": "link_p1_0",
+        "page_index": 1,
+        "bbox": [
+          50.0,
+          195.8897705078125,
+          174.12399291992188,
+          209.8897705078125
+        ],
+        "kind": "internal",
+        "type": "internal",
+        "target": "page_1",
+        "uri": null
+      }
+    ],
+    "bookmarks": [
+      {
+        "id": "bookmark_0",
+        "level": 1,
+        "title": "Introduction",
+        "page_index": 0,
+        "destination": "{'kind': 4, 'xref': 13, 'page': '1', 'view': 'Fit', 'zoom': 0.0}"
+      },
+      {
+        "id": "bookmark_1",
+        "level": 1,
+        "title": "Methods",
+        "page_index": 1,
+        "destination": "{'kind': 4, 'xref': 14, 'page': '2', 'view': 'Fit', 'zoom': 0.0}"
+      },
+      {
+        "id": "bookmark_2",
+        "level": 1,
+        "title": "Conclusion",
+        "page_index": 2,
+        "destination": "{'kind': 4, 'xref': 15, 'page': '3', 'view': 'Fit', 'zoom': 0.0}"
+      }
+    ],
+    "form_fields": [],
+    "structure": {
+      "has_tags": false,
+      "lang": null,
+      "role_map": null,
+      "tree": null,
+      "validation": {
+        "errors": [
+          "No /StructTreeRoot (PDF is likely untagged)"
+        ],
+        "notes": []
+      }
+    },
+    "inferred_language": "en",
+    "heading_candidates": [
+      "span_p0_s0",
+      "span_p0_s4",
+      "span_p1_s0",
+      "span_p1_s4",
+      "span_p2_s0"
+    ],
+    "reading_order": {
+      "source": "pdfminer",
+      "order": [
+        "block_p0_0",
+        "block_p0_1",
+        "block_p1_2",
+        "block_p1_3",
+        "block_p2_4",
+        "block_p2_5"
+      ],
+      "note": "reading order is block IDs"
+    }
+  }
+}

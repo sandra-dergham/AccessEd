@@ -1,6 +1,6 @@
 from typing import Any, Dict, Literal
 
-Severity = Literal["low", "medium", "high"]
+Severity = Literal["low", "not applicable", "needs review", "medium", "high"]
 
 def make_issue(
     criterion: str,
@@ -8,13 +8,12 @@ def make_issue(
     location: Dict[str, Any],
     severity: Severity,
     recommendation: str,
- ) -> Dict[str, Any]:
+) -> Dict[str, Any]:
     obj: Dict[str, Any] = {
         "criterion": criterion,
         "issue": issue,
-        "location": location, 
+        "location": location,
         "severity": severity,
         "recommendation": recommendation,
     }
-   
     return obj

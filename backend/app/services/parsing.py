@@ -2,7 +2,7 @@ import json
 import hashlib
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
-
+from langdetect import detect, LangDetectException
 from pdfminer.high_level import extract_pages
 from pdfminer.layout import LTTextBoxHorizontal, LTTextLineHorizontal, LTChar, LTAnno
 
@@ -67,10 +67,10 @@ def pdfminer_bbox_to_pymupdf_bbox(bbox_pdfminer: List[float], page_height: float
     Convert to PyMuPDF-like: y grows downward (top-left style).
     """
     x0, y0, x1, y1 = bbox_pdfminer
-    # flip y using page height
     new_y0 = page_height - y1
     new_y1 = page_height - y0
     return [float(x0), float(new_y0), float(x1), float(new_y1)]
+
 
 def srgb_channel_to_linear(c: float) -> float:
     c = c / 255.0
@@ -87,6 +87,90 @@ def relative_luminance(rgb: List[int]) -> float:
     return 0.2126 * R + 0.7152 * G + 0.0722 * B
 
 
+def detect_language_safe(text: str) -> Optional[str]:
+    """
+    Detect language of a text snippet.
+    Returns ISO language code or None if detection fails.
+    """
+    try:
+        if not text or len(text.strip()) < 5:
+            return None
+        return detect(text)
+    except LangDetectException:
+        return None
+def infer_document_language(text_spans: List[Dict[str, Any]]) -> Optional[str]:
+    """
+    Infer the dominant document language from detected span languages.
+    Returns a language code only if one language clearly dominates.
+    """
+    from collections import Counter
+
+    langs = []
+    for span in text_spans:
+        lang = span.get("detected_language")
+        text = (span.get("text") or "").strip()
+
+        if not lang or not text:
+            continue
+
+        if len(text) < 20:
+            continue
+
+        if not any(ch.isalpha() for ch in text):
+            continue
+
+        langs.append(str(lang).lower().split("-")[0])
+
+    if not langs:
+        return None
+
+    counts = Counter(langs)
+    top_lang, top_count = counts.most_common(1)[0]
+
+    if top_count / len(langs) >= 0.8:
+        return top_lang
+
+    return None
+
+
+def detect_heading_candidates(text_spans: List[Dict[str, Any]]) -> List[str]:
+    """
+    Return IDs of spans that look like headings based on visual heuristics.
+    """
+    font_sizes = []
+    for span in text_spans:
+        size = span.get("font", {}).get("size")
+        if isinstance(size, (int, float)) and size > 0:
+            font_sizes.append(size)
+
+    avg_font_size = sum(font_sizes) / len(font_sizes) if font_sizes else 0
+    candidates = []
+
+    for span in text_spans:
+        text = (span.get("text") or "").strip()
+        font = span.get("font", {})
+        size = font.get("size", 0)
+        font_name = str(font.get("name", "")).lower()
+
+        if not text:
+            continue
+        if len(text) > 60:
+            continue
+        if not any(ch.isalpha() for ch in text):
+            continue
+
+        stripped_alnum = "".join(ch for ch in text if ch.isalnum())
+        if stripped_alnum.isdigit():
+            continue
+
+        is_large = size >= max(16, avg_font_size * 1.2)
+        is_boldish = any(word in font_name for word in ["bold", "black", "semibold", "demi"])
+
+        if is_large or (is_boldish and size >= avg_font_size):
+            candidates.append(span["id"])
+
+    return candidates
+
 def contrast_ratio(fg_rgb: List[int], bg_rgb: List[int]) -> float:
     L1 = relative_luminance(fg_rgb)
     L2 = relative_luminance(bg_rgb)
@@ -96,15 +180,13 @@ def contrast_ratio(fg_rgb: List[int], bg_rgb: List[int]) -> float:
 
 
 def is_large_text(font_size_pt: float) -> bool:
-    # WCAG large text: >= 18pt normal OR >= 14pt bold
-    # We don't reliably know bold yet -> treat >=18pt as large; later upgrade using flags.
     return font_size_pt >= 18.0
+
+
 def estimate_background_rgb_for_bbox(page: fitz.Page, bbox: List[float], scale: float = 2.0, grid: int = 8) -> Optional[List[int]]:
     """
     Render page to an image and sample pixels under bbox.
     Returns median RGB from sampled pixels.
-    - scale: render scaling (2.0 = sharper)
-    - grid: grid x grid samples inside bbox
     """
     try:
         mat = fitz.Matrix(scale, scale)
@@ -115,7 +197,6 @@ def estimate_background_rgb_for_bbox(page: fitz.Page, bbox: List[float], scale: 
     except Exception:
         return None
 
-    # Scale bbox to pixel coords
     x0, y0, x1, y1 = bbox
     px0 = int(max(0, min(pix.width - 1, round(x0 * scale))))
     py0 = int(max(0, min(pix.height - 1, round(y0 * scale))))
@@ -125,7 +206,6 @@ def estimate_background_rgb_for_bbox(page: fitz.Page, bbox: List[float], scale: 
     if px1 <= px0 or py1 <= py0:
         return None
 
-    # shrink a bit to avoid sampling glyph pixels too much
     pad = max(1, int(min(px1 - px0, py1 - py0) * 0.12))
     sx0 = min(px1 - 1, px0 + pad)
     sy0 = min(py1 - 1, py0 + pad)
@@ -158,7 +238,6 @@ def compute_contrast_for_spans(doc: fitz.Document, text_spans: List[Dict[str, An
       span["background_estimate"]
       span["contrast"]
     """
-    # group spans by page
     spans_by_page: Dict[int, List[Dict[str, Any]]] = {}
     for s in text_spans:
         spans_by_page.setdefault(s["page_index"], []).append(s)
@@ -176,14 +255,12 @@ def compute_contrast_for_spans(doc: fitz.Document, text_spans: List[Dict[str, An
 
             bg = estimate_background_rgb_for_bbox(page, bbox, scale=scale, grid=8)
             if bg is None:
-                # fallback: assume white background
                 bg = [255, 255, 255]
                 method = "fallback_white"
             else:
                 method = "sampled_median"
 
             ratio = contrast_ratio(fg, bg)
-
             large = is_large_text(font_size)
 
             sp["background_estimate"] = {
@@ -198,9 +275,46 @@ def compute_contrast_for_spans(doc: fitz.Document, text_spans: List[Dict[str, An
                 "large_text_assumed": large
             }
 
+
 # -----------------------------
 # Phase 1: PyMuPDF extractors
 # -----------------------------
+
+def extract_form_fields(page: fitz.Page, page_index: int):
+    fields = []
+    field_counter = 0
+
+    try:
+        widgets = page.widgets()
+    except Exception:
+        widgets = []
+
+    if not widgets:
+        return fields
+
+    for widget in widgets:
+        try:
+            rect = widget.rect
+        except Exception:
+            rect = None
+
+        field_id = f"field_p{page_index}_{field_counter}"
+        field_counter += 1
+
+        fields.append({
+            "id": field_id,
+            "page_index": page_index,
+            "name": getattr(widget, "field_name", None),
+            "field_type": str(getattr(widget, "field_type", None)),
+            "label": None,
+            "value": getattr(widget, "field_value", None),
+            "bbox": [
+                float(rect.x0), float(rect.y0), float(rect.x1), float(rect.y1)
+            ] if rect else None
+        })
+
+    return fields
+
 
 def extract_images(page: fitz.Page, doc: fitz.Document, page_index: int):
     image_assets = {}
@@ -250,10 +364,14 @@ def extract_images(page: fitz.Page, doc: fitz.Document, page_index: int):
                 "ocr_confidence": None
             })
 
-    return image_assets, image_occurrences,asset_bytes_map
+    return image_assets, image_occurrences, asset_bytes_map
 
 
 def extract_links(page: fitz.Page, page_index: int):
+    """
+    Extract links in a rule-friendly format.
+    Keeps 'kind' for backward compatibility and also adds 'type' + 'uri'.
+    """
     links = []
     link_counter = 0
 
@@ -265,22 +383,29 @@ def extract_links(page: fitz.Page, page_index: int):
         link_id = f"link_p{page_index}_{link_counter}"
         link_counter += 1
 
-        if "uri" in l:
-            kind = "uri"
-            target = l.get("uri")
-        elif "page" in l:
-            kind = "internal"
+        link_type = "unknown"
+        target = None
+        uri = None
+
+        if "uri" in l and l.get("uri"):
+            link_type = "uri"
+            uri = l.get("uri")
+            target = uri
+        elif "page" in l and l.get("page") is not None:
+            link_type = "internal"
             target = f"page_{l.get('page')}"
-        else:
-            kind = "unknown"
-            target = None
+        elif "to" in l and l.get("to") is not None:
+            link_type = "internal"
+            target = str(l.get("to"))
 
         links.append({
             "id": link_id,
             "page_index": page_index,
             "bbox": [float(rect.x0), float(rect.y0), float(rect.x1), float(rect.y1)],
-            "kind": kind,
-            "target": target
+            "kind": link_type,
+            "type": link_type,
+            "target": target,
+            "uri": uri
         })
 
     return links
@@ -317,6 +442,41 @@ def extract_graphics(page: fitz.Page, page_index: int):
     return graphics
 
 
+def extract_bookmarks(doc: fitz.Document):
+    """
+    Extract document outline / bookmarks using PyMuPDF.
+    Returns a flat list of bookmark entries.
+    """
+    bookmarks = []
+
+    try:
+        toc = doc.get_toc(simple=False)
+    except Exception:
+        toc = []
+
+    if not toc:
+        return bookmarks
+
+    for i, item in enumerate(toc):
+        try:
+            level = item[0] if len(item) > 0 else None
+            title = item[1] if len(item) > 1 else None
+            page = item[2] if len(item) > 2 else None
+            dest = item[3] if len(item) > 3 else None
+
+            bookmarks.append({
+                "id": f"bookmark_{i}",
+                "level": int(level) if level is not None else None,
+                "title": str(title).strip() if title else None,
+                "page_index": int(page - 1) if isinstance(page, int) and page > 0 else None,
+                "destination": str(dest) if dest is not None else None
+            })
+        except Exception:
+            continue
+
+    return bookmarks
+
+
 # -----------------------------
 # Phase 2: pdfminer blocks + reading order
 # -----------------------------
@@ -349,7 +509,6 @@ def extract_pdfminer_blocks(pdf_path: str):
                         lines.append((y1, x0, x1, y0, line_text))
 
         lines.sort(key=lambda t: (-t[0], t[1]))
-
         current = []
         last_y = None
 
@@ -374,7 +533,7 @@ def extract_pdfminer_blocks(pdf_path: str):
                 "page_index": page_index,
                 "bbox_pdfminer": [float(bbox[0]), float(bbox[1]), float(bbox[2]), float(bbox[3])],
                 "text": text,
-                "span_ids": []  # Phase 2.5 fills this
+                "span_ids": []
             })
 
             reading_order.append(block_id)
@@ -408,14 +567,12 @@ def align_blocks_to_spans(
 ):
     """
     Fill each text_blocks[i]["span_ids"] by matching span centers into block bbox.
-    Also adds "bbox" for the block in PyMuPDF coordinates (for consistency).
+    Also adds "bbox" for the block in PyMuPDF coordinates.
     """
-    # index spans by page
     spans_by_page: Dict[int, List[Dict[str, Any]]] = {}
     for s in text_spans:
         spans_by_page.setdefault(s["page_index"], []).append(s)
 
-    # Map page heights
     page_height: Dict[int, float] = {p["page_index"]: float(p["height"]) for p in pages}
 
     for blk in text_blocks:
@@ -425,7 +582,7 @@ def align_blocks_to_spans(
             continue
 
         bbox_pym = pdfminer_bbox_to_pymupdf_bbox(blk["bbox_pdfminer"], h)
-        blk["bbox"] = bbox_pym  # consistent bbox for later annotation
+        blk["bbox"] = bbox_pym
 
         candidates = spans_by_page.get(pno, [])
         matched_ids = []
@@ -435,9 +592,7 @@ def align_blocks_to_spans(
             if point_in_bbox(cx, cy, bbox_pym, margin=3.0):
                 matched_ids.append(sp["id"])
 
-        # Optional: sort matched spans by y then x (reading-ish order)
         def span_sort_key(span_id: str):
-            # find span
             s = next((x for x in candidates if x["id"] == span_id), None)
             if not s:
                 return (0, 0)
@@ -445,39 +600,32 @@ def align_blocks_to_spans(
             return (y0, x0)
 
         matched_ids.sort(key=span_sort_key)
-
         blk["span_ids"] = matched_ids
 
     return text_blocks
 
+
+# -----------------------------
+# Structure extraction with pikepdf
+# -----------------------------
+
 def _pike_to_py(obj):
-    """
-    Convert pikepdf objects into JSON-safe Python types.
-    Keep it conservative: strings, numbers, booleans, dict, list, None.
-    """
     try:
-        # pikepdf.Name like /Figure, /P etc.
         if isinstance(obj, pikepdf.Name):
-            return str(obj)[1:]  # remove leading "/"
-        # pikepdf.String or regular Python str
+            return str(obj)[1:]
         if isinstance(obj, (pikepdf.String, str)):
             return str(obj)
-        # numbers/bools
         if isinstance(obj, (int, float, bool)):
             return obj
-        # null
         if obj is None:
             return None
-        # arrays
         if isinstance(obj, pikepdf.Array):
             return [_pike_to_py(x) for x in obj]
-        # dictionaries
         if isinstance(obj, pikepdf.Dictionary):
             out = {}
             for k, v in obj.items():
                 out[str(k)[1:] if isinstance(k, pikepdf.Name) else str(k)] = _pike_to_py(v)
             return out
-        # fallback
         return str(obj)
     except Exception:
         return str(obj)
@@ -486,10 +634,10 @@ def _pike_to_py(obj):
 def extract_structure_pikepdf(pdf_path: str):
     """
     Extract:
-      - /Lang (document language)
-      - /StructTreeRoot presence (tagged PDF)
-      - /RoleMap (if present)
-      - a simplified structure tree (roles + children + alt/actualtext if present)
+      - /Lang
+      - /StructTreeRoot presence
+      - /RoleMap
+      - simplified structure tree
     """
     result = {
         "has_tags": False,
@@ -506,14 +654,15 @@ def extract_structure_pikepdf(pdf_path: str):
         with pikepdf.open(pdf_path) as pdf:
             root = pdf.Root
 
-            # Language metadata
             try:
                 if "/Lang" in root:
-                    result["lang"] = str(root["/Lang"])
+                    lang_val = str(root["/Lang"]).strip()
+                    if lang_val.startswith("(") and lang_val.endswith(")"):
+                        lang_val = lang_val[1:-1].strip()
+                    result["lang"] = lang_val or None
             except Exception:
                 result["validation"]["notes"].append("Could not read /Lang")
 
-            # StructTreeRoot = tag tree root
             if "/StructTreeRoot" not in root:
                 result["validation"]["errors"].append("No /StructTreeRoot (PDF is likely untagged)")
                 return result
@@ -521,21 +670,18 @@ def extract_structure_pikepdf(pdf_path: str):
             result["has_tags"] = True
             struct_root = root["/StructTreeRoot"]
 
-            # RoleMap: mapping custom tags -> standard tags
             try:
                 if "/RoleMap" in struct_root:
                     result["role_map"] = _pike_to_py(struct_root["/RoleMap"])
             except Exception:
                 result["validation"]["notes"].append("Could not read /RoleMap")
 
-            # K = kids of structure tree root (can be array or single dict)
             if "/K" not in struct_root:
                 result["validation"]["errors"].append("StructTreeRoot has no /K children")
                 result["tree"] = []
                 return result
 
             kids = struct_root["/K"]
-            # normalize kids to list
             if not isinstance(kids, pikepdf.Array):
                 kids = pikepdf.Array([kids])
 
@@ -547,11 +693,10 @@ def extract_structure_pikepdf(pdf_path: str):
                 node_id = f"node_{node_counter}"
                 node_counter += 1
 
-                # Role /S (e.g., /P, /H1, /Figure)
                 role = None
                 try:
                     if isinstance(node, pikepdf.Dictionary) and "/S" in node:
-                        role = str(node["/S"])[1:]  # drop "/"
+                        role = str(node["/S"])[1:]
                 except Exception:
                     role = None
 
@@ -564,7 +709,6 @@ def extract_structure_pikepdf(pdf_path: str):
                     "actual_text": None
                 }
 
-                # /Alt and /ActualText sometimes exist for tagged figures/spans
                 try:
                     if isinstance(node, pikepdf.Dictionary) and "/Alt" in node:
                         out_node["alt"] = str(node["/Alt"])
@@ -577,18 +721,15 @@ def extract_structure_pikepdf(pdf_path: str):
                 except Exception:
                     pass
 
-                # Traverse children /K
                 try:
                     if isinstance(node, pikepdf.Dictionary) and "/K" in node:
                         child = node["/K"]
 
-                        # /K can be: int (MCID), dict, array, or mixed
                         if isinstance(child, pikepdf.Array):
                             for c in child:
                                 if isinstance(c, pikepdf.Dictionary):
                                     out_node["children"].append(walk(c, depth + 1))
                                 else:
-                                    # MCID or other leaf
                                     out_node["children"].append({
                                         "type": "leaf",
                                         "value": _pike_to_py(c)
@@ -609,7 +750,6 @@ def extract_structure_pikepdf(pdf_path: str):
                 if isinstance(k, pikepdf.Dictionary):
                     nodes.append(walk(k, 0))
                 else:
-                    # sometimes kids are MCIDs directly
                     nodes.append({"type": "leaf", "value": _pike_to_py(k)})
 
             result["tree"] = nodes
@@ -619,24 +759,25 @@ def extract_structure_pikepdf(pdf_path: str):
         result["validation"]["errors"].append(f"pikepdf failed: {type(e).__name__}: {e}")
         return result
 
+
+# -----------------------------
+# OCR
+# -----------------------------
+
 def ocr_image_bytes(img_bytes: bytes, lang: str = "eng"):
     """
     Returns (text, confidence)
-    Confidence here is a simple average word confidence (0-100) when available.
-    If not available, returns None for confidence.
     """
     try:
         img = Image.open(io.BytesIO(img_bytes)).convert("RGB")
     except Exception:
         return None, None
 
-    # Get text
     try:
         text = pytesseract.image_to_string(img, lang=lang).strip()
     except Exception:
         return None, None
 
-    # Get confidence (optional)
     conf = None
     try:
         data = pytesseract.image_to_data(img, lang=lang, output_type=pytesseract.Output.DICT)
@@ -655,10 +796,10 @@ def ocr_image_bytes(img_bytes: bytes, lang: str = "eng"):
 
     return text if text else None, conf
 
+
 def run_ocr_on_image_occurrences(image_occurrences, asset_bytes_global, min_px: int = 40_000):
     """
     OCR only images that are likely to contain readable text.
-    min_px is width*height threshold for skipping tiny icons.
     """
     for occ in image_occurrences:
         asset_id = occ["asset_id"]
@@ -666,8 +807,6 @@ def run_ocr_on_image_occurrences(image_occurrences, asset_bytes_global, min_px: 
         if not b:
             continue
 
-        # Optional: skip tiny images based on asset metadata (if you have it)
-        # We'll estimate size using Pillow quickly
         try:
             img = Image.open(io.BytesIO(b))
             w, h = img.size
@@ -677,28 +816,33 @@ def run_ocr_on_image_occurrences(image_occurrences, asset_bytes_global, min_px: 
             pass
 
         text, conf = ocr_image_bytes(b, lang="eng")
-
         occ["ocr_text"] = text
         occ["ocr_confidence"] = conf
 
 
 # -----------------------------
-# Main extraction: Phase 1 + 2 + 2.5
+# Main extraction
 # -----------------------------
 
-def extract_document_json(pdf_path: str ,run_ocr: bool = True) -> Dict[str, Any]:
-    # Phase 2 first (uses file path)
+def extract_document_json(pdf_path: str, run_ocr: bool = True) -> Dict[str, Any]:
     text_blocks, reading_order = extract_pdfminer_blocks(pdf_path)
 
-    # Phase 1 (visual truth)
     doc = fitz.open(pdf_path)
+
+    pdf_meta = doc.metadata or {}
+    title = pdf_meta.get("title")
+    author = pdf_meta.get("author")
+    subject = pdf_meta.get("subject")
+    keywords = pdf_meta.get("keywords")
+
+    bookmarks = extract_bookmarks(doc)
 
     pages: List[Dict[str, Any]] = []
     text_spans: List[Dict[str, Any]] = []
 
     all_image_assets: Dict[str, Any] = {}
     all_image_occurrences: List[Dict[str, Any]] = []
-
+    all_form_fields: List[Dict[str, Any]] = []
     all_links: List[Dict[str, Any]] = []
     all_graphics: List[Dict[str, Any]] = []
     all_asset_bytes: Dict[str, bytes] = {}
@@ -713,7 +857,6 @@ def extract_document_json(pdf_path: str ,run_ocr: bool = True) -> Dict[str, Any]
             "rotation": int(page.rotation)
         })
 
-        # spans
         text_dict = page.get_text("dict")
         span_counter = 0
 
@@ -724,8 +867,11 @@ def extract_document_json(pdf_path: str ,run_ocr: bool = True) -> Dict[str, Any]
                 for span in line.get("spans", []):
                     bbox = span.get("bbox")
                     txt = span.get("text", "")
+
                     if not bbox or not txt.strip():
                         continue
+
+                    detected_lang = detect_language_safe(txt)
 
                     span_id = f"span_p{page_index}_s{span_counter}"
                     span_counter += 1
@@ -735,6 +881,7 @@ def extract_document_json(pdf_path: str ,run_ocr: bool = True) -> Dict[str, Any]
                         "page_index": page_index,
                         "bbox": [float(bbox[0]), float(bbox[1]), float(bbox[2]), float(bbox[3])],
                         "text": txt,
+                        "detected_language": detected_lang,
                         "font": {
                             "name": span.get("font", ""),
                             "size": float(span.get("size", 0.0)),
@@ -745,7 +892,6 @@ def extract_document_json(pdf_path: str ,run_ocr: bool = True) -> Dict[str, Any]
                         }
                     })
 
-        # images
         assets, occurrences, asset_bytes_map = extract_images(page, doc, page_index)
 
         for aid, asset in assets.items():
@@ -755,23 +901,19 @@ def extract_document_json(pdf_path: str ,run_ocr: bool = True) -> Dict[str, Any]
             all_asset_bytes[aid] = img_bytes
 
         all_image_occurrences.extend(occurrences)
-
-        # links
         all_links.extend(extract_links(page, page_index))
-
-        # graphics
         all_graphics.extend(extract_graphics(page, page_index))
-    # Phase 5: contrast (needs open doc)
+        all_form_fields.extend(extract_form_fields(page, page_index))
+
     compute_contrast_for_spans(doc, text_spans, scale=2.0)
-
     doc.close()
-    # Phase 4: OCR (fills image_occurrences[].ocr_text and .ocr_confidence)
+
     if run_ocr:
-       run_ocr_on_image_occurrences(all_image_occurrences, all_asset_bytes)
+        run_ocr_on_image_occurrences(all_image_occurrences, all_asset_bytes)
 
-    # Phase 2.5 alignment
     text_blocks = align_blocks_to_spans(text_blocks, text_spans, pages)
-
+    inferred_language = infer_document_language(text_spans)
+    heading_candidates = detect_heading_candidates(text_spans)
     file_hash = sha256_file(pdf_path)
     structure = extract_structure_pikepdf(pdf_path)
 
@@ -779,6 +921,10 @@ def extract_document_json(pdf_path: str ,run_ocr: bool = True) -> Dict[str, Any]
         "document": {
             "metadata": {
                 "filename": Path(pdf_path).name,
+                "title": title,
+                "author": author,
+                "subject": subject,
+                "keywords": keywords,
                 "file_hash_sha256": file_hash,
                 "page_count": len(pages),
                 "coordinate_system": {
@@ -795,7 +941,11 @@ def extract_document_json(pdf_path: str ,run_ocr: bool = True) -> Dict[str, Any]
             },
             "graphics": all_graphics,
             "links": all_links,
+            "bookmarks": bookmarks,
+           "form_fields": all_form_fields,
             "structure": structure,
+            "inferred_language": inferred_language,
+            "heading_candidates": heading_candidates,
             "reading_order": {
                 "source": "pdfminer",
                 "order": reading_order,
