@@ -16,6 +16,14 @@ pytesseract.pytesseract.tesseract_cmd = r"C:\Program Files\Tesseract-OCR\tessera
 
 import numpy as np
 
+from helper_function_b1  import ( pdfminer_bbox_to_pymupdf_bbox,default_presentation_semantics,extract_widgets,annotate_text_in_image_context,annotate_logo_like_text,annotate_decorative_text,
+    default_resize_risk,
+    annotate_resize_risk,center_of_bbox,annotate_ui_labels,
+    annotate_graphics_non_text_contrast,
+    annotate_widgets_non_text_contrast,
+    extract_media_occurrences
+    ,annotate_media_alternatives
+    ,extract_embedded_files_pikepdf,extract_media_annotations_pikepdf)
 
 # -----------------------------
 # Helpers
@@ -51,26 +59,9 @@ def float_rgb_to_int(rgb):
     return None
 
 
-def center_of_bbox(b: List[float]) -> Tuple[float, float]:
-    x0, y0, x1, y1 = b
-    return ((x0 + x1) / 2.0, (y0 + y1) / 2.0)
-
-
 def point_in_bbox(px: float, py: float, b: List[float], margin: float = 2.0) -> bool:
     x0, y0, x1, y1 = b
     return (x0 - margin) <= px <= (x1 + margin) and (y0 - margin) <= py <= (y1 + margin)
-
-
-def pdfminer_bbox_to_pymupdf_bbox(bbox_pdfminer: List[float], page_height: float) -> List[float]:
-    """
-    pdfminer bbox: [x0, y0, x1, y1] with origin bottom-left.
-    Convert to PyMuPDF-like: y grows downward (top-left style).
-    """
-    x0, y0, x1, y1 = bbox_pdfminer
-    # flip y using page height
-    new_y0 = page_height - y1
-    new_y1 = page_height - y0
-    return [float(x0), float(new_y0), float(x1), float(new_y1)]
 
 def srgb_channel_to_linear(c: float) -> float:
     c = c / 255.0
@@ -94,11 +85,21 @@ def contrast_ratio(fg_rgb: List[int], bg_rgb: List[int]) -> float:
     darker = min(L1, L2)
     return (lighter + 0.05) / (darker + 0.05)
 
+def is_bold_font(font: Dict[str, Any]) -> bool:
+    name = (font.get("name") or "").lower()
+    flags = font.get("flags")
+    if "bold" in name:
+        return True
+    if isinstance(flags, int) and (flags & 16):
+        return True
 
-def is_large_text(font_size_pt: float) -> bool:
-    # WCAG large text: >= 18pt normal OR >= 14pt bold
-    # We don't reliably know bold yet -> treat >=18pt as large; later upgrade using flags.
-    return font_size_pt >= 18.0
+    return False
+
+def is_large_text(font: Dict[str, Any]) -> bool:
+    size = float(font.get("size", 0.0))
+    bold = is_bold_font(font)
+    return size >= 18.0 or (bold and size >= 14.0)
+
 def estimate_background_rgb_for_bbox(page: fitz.Page, bbox: List[float], scale: float = 2.0, grid: int = 8) -> Optional[List[int]]:
     """
     Render page to an image and sample pixels under bbox.
@@ -172,7 +173,8 @@ def compute_contrast_for_spans(doc: fitz.Document, text_spans: List[Dict[str, An
                 continue
 
             fg = sp.get("color", {}).get("fill_rgb", [0, 0, 0])
-            font_size = float(sp.get("font", {}).get("size", 0.0))
+            font = sp.get("font", {})
+            large = is_large_text(font)
 
             bg = estimate_background_rgb_for_bbox(page, bbox, scale=scale, grid=8)
             if bg is None:
@@ -182,9 +184,12 @@ def compute_contrast_for_spans(doc: fitz.Document, text_spans: List[Dict[str, An
             else:
                 method = "sampled_median"
 
+            if not isinstance(fg, list) or len(fg) < 3:
+                continue    
+
             ratio = contrast_ratio(fg, bg)
 
-            large = is_large_text(font_size)
+            
 
             sp["background_estimate"] = {
                 "bg_rgb": bg,
@@ -702,6 +707,7 @@ def extract_document_json(pdf_path: str ,run_ocr: bool = True) -> Dict[str, Any]
     all_links: List[Dict[str, Any]] = []
     all_graphics: List[Dict[str, Any]] = []
     all_asset_bytes: Dict[str, bytes] = {}
+    all_widgets: List[Dict[str, Any]] = []
 
     for page_index in range(doc.page_count):
         page = doc.load_page(page_index)
@@ -712,15 +718,16 @@ def extract_document_json(pdf_path: str ,run_ocr: bool = True) -> Dict[str, Any]
             "height": float(page.rect.height),
             "rotation": int(page.rotation)
         })
+        all_widgets.extend(extract_widgets(page, page_index))
 
         # spans
         text_dict = page.get_text("dict")
         span_counter = 0
 
-        for block in text_dict.get("blocks", []):
+        for block_idx,block in  enumerate(text_dict.get("blocks", [])):
             if block.get("type") != 0:
                 continue
-            for line in block.get("lines", []):
+            for line_idx,line in enumerate( block.get("lines", [])):
                 for span in line.get("spans", []):
                     bbox = span.get("bbox")
                     txt = span.get("text", "")
@@ -742,7 +749,13 @@ def extract_document_json(pdf_path: str ,run_ocr: bool = True) -> Dict[str, Any]
                         },
                         "color": {
                             "fill_rgb": int_color_to_rgb(span.get("color"))
-                        }
+                        },
+                        "layout": {
+                            "block_index": block_idx,
+                            "line_index": line_idx
+                        },
+                        "presentation_semantics": default_presentation_semantics(),
+                        "resize_risk": default_resize_risk()
                     })
 
         # images
@@ -763,12 +776,23 @@ def extract_document_json(pdf_path: str ,run_ocr: bool = True) -> Dict[str, Any]
         all_graphics.extend(extract_graphics(page, page_index))
     # Phase 5: contrast (needs open doc)
     compute_contrast_for_spans(doc, text_spans, scale=2.0)
-
+    annotate_graphics_non_text_contrast(doc, all_graphics, scale=2.0)
+    annotate_widgets_non_text_contrast(doc, all_widgets, scale=2.0)
+    media_occurrences = []
+    media_occurrences.extend(extract_media_occurrences(doc, text_spans))
+    media_occurrences.extend(extract_media_annotations_pikepdf(pdf_path, pages))
+    media_occurrences.extend(extract_embedded_files_pikepdf(pdf_path))
+    annotate_media_alternatives(media_occurrences, text_spans)
     doc.close()
     # Phase 4: OCR (fills image_occurrences[].ocr_text and .ocr_confidence)
     if run_ocr:
        run_ocr_on_image_occurrences(all_image_occurrences, all_asset_bytes)
-
+    annotate_text_in_image_context(text_spans, all_image_occurrences)
+    annotate_logo_like_text(text_spans, pages)
+    annotate_decorative_text(text_spans)
+    annotate_ui_labels(text_spans, all_widgets)
+    annotate_resize_risk(text_spans, all_graphics, all_widgets,pages)
+   
     # Phase 2.5 alignment
     text_blocks = align_blocks_to_spans(text_blocks, text_spans, pages)
 
@@ -795,6 +819,10 @@ def extract_document_json(pdf_path: str ,run_ocr: bool = True) -> Dict[str, Any]
             },
             "graphics": all_graphics,
             "links": all_links,
+            "widgets": all_widgets,
+            "media": {
+                "occurrences": media_occurrences
+            },
             "structure": structure,
             "reading_order": {
                 "source": "pdfminer",
