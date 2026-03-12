@@ -1,5 +1,6 @@
 from .issue import make_issue
-from backend.app.services.helper_function_b1 import ( detect_link_color_only,detect_explicit_color_only_instructions,detect_required_field_color_only,detect_repeated_identical_marker_or_label_color_only)
+from typing import Dict,List,Any
+from backend.app.services.helper_function_b1 import (detect_non_text_controls_input_1_1_1,detect_non_text_images_1_1_1,detect_non_text_media_1_1_1,combine_nearby_spans, matching_widget_for_acrofield,normalize_label,collect_label,detect_link_color_only,detect_explicit_color_only_instructions,detect_required_field_color_only,detect_repeated_identical_marker_or_label_color_only)
     
 
 
@@ -57,7 +58,7 @@ def rule_1_4_3(document: dict) -> list[dict]:
     return issues      
 
 #############
-#WCAG 1.2
+# WCAG 1.2
 #############
 
 #1.2.1
@@ -299,6 +300,285 @@ def rule_1_2_5(document: dict) -> list[dict]:
 
     return issues
 
+#########
+#wcag 2.5
+#########
+
+# 2.5.3
+def rule_2_5_3(document: dict) -> list[dict]:
+    issues: list[dict] = []
+    doc = document.get("document", document)
+
+    interactivity = doc.get("interactivity", {})
+    acroform_fields = interactivity.get("acroform_fields", [])
+    widgets = doc.get("widgets", [])
+    text_spans = doc.get("text_spans", [])
+
+    spans_by_page: Dict[int, List[Dict[str, Any]]] = {}
+    for sp in text_spans:
+        p = sp.get("page_index")
+        if p is not None:
+            spans_by_page.setdefault(p, []).append(sp)
+
+    for field in acroform_fields:
+        
+        widget = matching_widget_for_acrofield(field, widgets)
+        if not widget:
+            continue
+        page_index = field.get("page_index")
+        if page_index is None:
+                 page_index = widget.get("page_index")
+
+        if page_index is None:
+            continue
+
+        page_spans = spans_by_page.get(page_index, [])
+        label_spans = collect_label(widget, page_spans)
+        visible_label = combine_nearby_spans(label_spans)
+
+        if not visible_label:
+            continue
+
+        programmatic_name = field.get("tooltip") or field.get("name") or ""
+
+        norm_visible = normalize_label(visible_label)
+        norm_programmatic = normalize_label(programmatic_name)
+
+        if not norm_visible:
+            continue
+
+        if not norm_programmatic:
+            issues.append(
+                make_issue(
+                    criterion="2.5.3",
+                    issue="label_in_name_needs_review",
+                    location={
+                        "page": page_index,
+                        "field_id": field.get("id"),
+                        "widget_id": widget.get("id"),
+                        "visible_label": visible_label,
+                    },
+                    severity="needs_review",
+                    recommendation=(
+                        "This control has visible label text, but a matching programmatic name "
+                        "could not be confirmed. Ensure the accessible name contains the visible label."
+                    ),
+                )
+            )
+            continue
+
+        if norm_visible in norm_programmatic:
+            continue
+        visible_words = [w for w in norm_visible.split() if len(w) >= 3]
+
+        # very short label
+        if not visible_words:
+            issues.append(
+                make_issue(
+                    criterion="2.5.3",
+                    issue="label_in_name_needs_review",
+                    location={
+                        "page": page_index,
+                        "field_id": field.get("id"),
+                        "widget_id": widget.get("id"),
+                        "visible_label": visible_label,
+                        "programmatic_name": programmatic_name,
+                    },
+                    severity="needs_review",
+                    recommendation=(
+                        "This control has a very short visible label, so the label-in-name "
+                        "relationship could not be confirmed automatically."
+                    ),
+                )
+            )
+            continue
+
+        if not any(word in norm_programmatic for word in visible_words):
+            issues.append(
+                make_issue(
+                    criterion="2.5.3",
+                    issue="label_not_in_name",
+                    location={
+                        "page": page_index,
+                        "field_id": field.get("id"),
+                        "widget_id": widget.get("id"),
+                        "visible_label": visible_label,
+                        "programmatic_name": programmatic_name,
+                    },
+                    severity="high",
+                    recommendation=(
+                        "Ensure the accessible name contains the same text as the visible label."
+                    ),
+                )
+            )
+
+    return issues
+
+#2.5.1
+def rule_2_5_1(document: dict) -> list[dict]:
+    issues: list[dict] = []
+    doc = document.get("document", document)
+
+    interactivity = doc.get("interactivity", {})
+    media_occurrences = doc.get("media", {}).get("occurrences", [])
+
+    has_javascript = interactivity.get("has_javascript", False)
+    javascript_triggers = interactivity.get("javascript_triggers", [])
+    acroform_fields = interactivity.get("acroform_fields", [])
+
+    has_richmedia = any(
+        (m.get("source") in {"RichMedia", "Screen"} or m.get("annotation_subtype") in {"RichMedia", "Screen"})
+        for m in media_occurrences
+    )
+
+    has_signature_field = any(
+        f.get("type") == "Sig"
+        for f in acroform_fields
+    )
+
+    if not has_javascript and not has_richmedia and not has_signature_field:
+        return issues
+
+    issues.append(
+        make_issue(
+            criterion="2.5.1",
+            issue="pointer_gesture_needs_review",
+            location={
+                "javascript_triggers": javascript_triggers,
+                "has_richmedia": has_richmedia,
+                "has_signature_field": has_signature_field,
+            },
+            severity="needs_review",
+            recommendation=(
+                "This PDF contains interactive or scripted content that may involve gesture-based input. "
+                "Verify that any multipoint or path-based gesture can also be performed with a single pointer "
+                "without requiring a path-based gesture, unless essential."
+            ),
+        )
+    )
+
+    return issues
+
+# 2.5.2
+def rule_2_5_2(document: dict) -> list[dict]:
+    issues: list[dict] = []
+    doc = document.get("document", document)
+
+    interactivity = doc.get("interactivity", {})
+    acroform_fields = interactivity.get("acroform_fields", [])
+    javascript_triggers = interactivity.get("javascript_triggers", [])
+    has_javascript = interactivity.get("has_javascript", False)
+    submit_actions = interactivity.get("submit_actions", [])
+    has_submit_action = interactivity.get("has_submit_action", False)
+
+    risky_fields = []
+
+    for field in acroform_fields:
+        validation_actions = field.get("validation_actions", {})
+        if not validation_actions:
+            continue
+
+        has_field_js = any(
+            action_info.get("has_javascript", False)
+            for action_info in validation_actions.values()
+            if isinstance(action_info, dict)
+        )
+
+        if has_field_js:
+            risky_fields.append({
+                "field_id": field.get("id"),
+                "page_index": field.get("page_index"),
+                "name": field.get("name"),
+                "type": field.get("type"),
+            })
+
+    if not has_javascript and not has_submit_action and not risky_fields:
+        return issues
+
+    issues.append(
+        make_issue(
+            criterion="2.5.2",
+            issue="pointer_cancellation_needs_review",
+            location={
+                "has_javascript": has_javascript,
+                "javascript_triggers": javascript_triggers,
+                "submit_actions": submit_actions,
+                "field_ids": [f.get("field_id") for f in risky_fields],
+            },
+            severity="needs_review",
+            recommendation=(
+                "This PDF contains scripted or submit-like interactive behavior. "
+                "Verify that pointer actions are not completed on pointer-down alone, "
+                "or that abort, undo, or reversal is available where required."
+            ),
+        )
+    )
+
+    return issues
+
+#2.5.4
+def rule_2_5_4(document: dict) -> list[dict]:
+    issues: list[dict] = []
+    doc = document.get("document", document)
+
+    interactivity = doc.get("interactivity", {})
+    media_occurrences = doc.get("media", {}).get("occurrences", [])
+
+    has_javascript = interactivity.get("has_javascript", False)
+    javascript_triggers = interactivity.get("javascript_triggers", [])
+
+    has_richmedia = any(
+        (m.get("source") in {"RichMedia", "Screen"} or m.get("annotation_subtype") in {"RichMedia", "Screen"})
+        for m in media_occurrences
+    )
+
+    # optional weak keyword signal from trigger names / locations
+    motion_keywords = {"motion", "tilt", "shake", "orientation", "accelerometer", "gyro", "gyroscope"}
+    trigger_text = " ".join(
+        str(t.get("trigger", "")) + " " + str(t.get("location", ""))
+        for t in javascript_triggers
+        if isinstance(t, dict)
+    ).lower()
+
+    has_motion_signal = any(k in trigger_text for k in motion_keywords)
+
+    if not has_javascript and not has_richmedia and not has_motion_signal:
+        return issues
+
+    issues.append(
+        make_issue(
+            criterion="2.5.4",
+            issue="motion_actuation_needs_review",
+            location={
+                "has_javascript": has_javascript,
+                "javascript_triggers": javascript_triggers,
+                "has_richmedia": has_richmedia,
+                "has_motion_signal": has_motion_signal,
+            },
+            severity="needs_review",
+            recommendation=(
+                "This PDF contains advanced scripted or embedded interactive content. "
+                "Verify that any motion-based functionality can also be operated through "
+                "user interface components and that motion response can be disabled, unless essential."
+            ),
+        )
+    )
+
+    return issues
+
+############
+# WCAG 1.1.1
+############
+
+def detect_wcag_1_1_1(document: dict) -> List[dict]:
+    issues: List[dict] = []
+
+    issues.extend(detect_non_text_controls_input_1_1_1(document))
+    issues.extend(detect_non_text_media_1_1_1(document))
+    issues.extend(detect_non_text_images_1_1_1(document))
+
+    return issues
+
 
 # rule 1.4.4
 # 1.4.4 resize issue
@@ -388,16 +668,6 @@ def rule_1_4_11(document: dict) -> list[dict]:
 
 def run_batch2_rules(document: dict) -> list[dict]:
     issues: list[dict] = []
-    doc = document.get("document", document)
-
     
-    # 1.4.1 Use of Color
-    issues.extend(rule_1_4_1(document))
-
-    # 1.4.11 Non-text Contrast
-    issues.extend(rule_1_4_11(document))
-
-    # 1.4.4 resize risk
-    issues.extend(rule_1_4_4(document))
 
     return issues  

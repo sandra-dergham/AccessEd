@@ -2,7 +2,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import fitz
 import numpy as np
 import re
-from wcag.issue import make_issue
+from .wcag.issue import make_issue
 import math
 import pikepdf
 import os
@@ -2182,4 +2182,104 @@ def detect_repeated_identical_marker_or_label_color_only(document: dict) -> list
     return issues
 
 #######             wcag 2.5 helpers             #######
+
+def normalize_label(text: Optional[str]) -> str:
+    if not text:
+        return ""
+    if not text:
+        return ""
+    text = text.strip().lower()
+    text = re.sub(r"[_\-]+", " ", text)      # email_field -> email field
+    text = re.sub(r"[^\w\s]", "", text)      # remove punctuation
+    text = re.sub(r"\s+", " ", text)
+    return text.strip()
+
+
+def matching_widget_for_acrofield(
+    field: Dict[str, Any],
+    widgets: List[Dict[str, Any]]
+) -> Optional[Dict[str, Any]]:
+    field_name = (field.get("name") or "").strip().lower()
+    field_page = field.get("page_index")
+
+    if not field_name:
+        return None
+
+    # strongest case: same page + same field name
+    if field_page is not None:
+        for w in widgets:
+            widget_name = (w.get("field_name") or "").strip().lower()
+            if w.get("page_index") == field_page and widget_name == field_name:
+                return w
+
+    # fallback: same field name only
+    matches = []
+    for w in widgets:
+        widget_name = (w.get("field_name") or "").strip().lower()
+        if widget_name == field_name:
+            matches.append(w)
+
+    if len(matches) == 1:
+        return matches[0]
+
+    return None
+
+
+def collect_label(
+    widget: Dict[str, Any],
+    page_spans: List[Dict[str, Any]],
+    max_h_gap: float = 140.0,
+    max_v_gap: float = 35.0,
+) -> List[Dict[str, Any]]:
+    widget_bbox = widget.get("bbox")
+    if not widget_bbox:
+        return []
+
+    candidates = []
+    _, _, wx1, wy1 = widget_bbox
+    wcx, wcy = center_of_bbox(widget_bbox)
+
+    for sp in page_spans:
+        sb = sp.get("bbox")
+        st = (sp.get("text") or "").strip()
+        if not sb or not st:
+            continue
+
+        h_gap = _horizontal_gap(widget_bbox, sb)
+        v_gap = _vertical_gap(widget_bbox, sb)
+
+        if h_gap <= max_h_gap and v_gap <= max_v_gap:
+            _, _, sx1, sy1 = sb
+            scx, scy = center_of_bbox(sb)
+
+            # prefer text above or left of the widget
+            is_left = sx1 <= wx1
+            is_above = sy1 <= wy1
+
+            candidates.append((
+                0 if (is_left or is_above) else 1,
+                v_gap,
+                h_gap,
+                abs(scy - wcy),
+                abs(scx - wcx),
+                sp
+            ))
+
+    candidates.sort(key=lambda x: x[:5])
+    return [c[-1] for c in candidates]
+
+
+def combine_nearby_spans(
+    spans: List[Dict[str, Any]],
+    limit: int = 3
+) -> str:
+    parts = []
+    for sp in spans[:limit]:
+        txt = (sp.get("text") or "").strip()
+        if txt:
+            parts.append(txt)
+    return " ".join(parts).strip()
+
+
+
 
