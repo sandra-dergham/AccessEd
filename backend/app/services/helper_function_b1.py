@@ -1346,218 +1346,6 @@ def annotate_decorative_text(text_spans: List[Dict[str, Any]]):
             sem["decorative_reason"] = ", ".join(reasons)
 
 
-##### contrast annotation helpers ########
-
-def annotate_graphics_non_text_contrast(
-    doc: fitz.Document,
-    graphics: List[Dict[str, Any]],
-    scale: float = 2.0
-):
-    graphics_by_page: Dict[int, List[Dict[str, Any]]] = {}
-    for g in graphics:
-        graphics_by_page.setdefault(g["page_index"], []).append(g)
-
-    for page_index, page_graphics in graphics_by_page.items():
-        page = doc.load_page(page_index)
-
-        for g in page_graphics:
-            bbox = g.get("bbox")
-            if not bbox:
-                g["non_text_contrast"] = default_non_text_contrast()
-                continue
-
-            adjacent = estimate_background_rgb_for_bbox(page, bbox, scale=scale, grid=8)
-            if adjacent is None:
-                adjacent = [255, 255, 255]
-                method = "fallback_white"
-            else:
-                method = "sampled_median"
-
-            stroke_rgb = g.get("stroke_rgb")
-            fill_rgb = g.get("fill_rgb")
-
-            contrast_against_stroke = None
-            contrast_against_fill = None
-
-            if stroke_rgb:
-                contrast_against_stroke = float(round(contrast_ratio(stroke_rgb, adjacent), 3))
-
-            if fill_rgb:
-                contrast_against_fill = float(round(contrast_ratio(fill_rgb, adjacent), 3))
-
-            weakest = min_non_none([contrast_against_stroke, contrast_against_fill])
-
-            g["non_text_contrast"] = {
-                "adjacent_rgb": adjacent,
-                "method": method,
-                "contrast_against_stroke": contrast_against_stroke,
-                "contrast_against_fill": contrast_against_fill,
-                "contrast_against_border": None,
-                "passes_3_1": weakest >= 3.0 if weakest is not None else None
-            }
-
-
-def annotate_widgets_non_text_contrast(
-    doc: fitz.Document,
-    widgets: List[Dict[str, Any]],
-    scale: float = 2.0
-):
-    widgets_by_page: Dict[int, List[Dict[str, Any]]] = {}
-    for w in widgets:
-        widgets_by_page.setdefault(w["page_index"], []).append(w)
-
-    for page_index, page_widgets in widgets_by_page.items():
-        page = doc.load_page(page_index)
-
-        for w in page_widgets:
-            bbox = w.get("bbox")
-            if not bbox:
-                w["non_text_contrast"] = default_non_text_contrast()
-                continue
-
-            adjacent = estimate_background_rgb_for_bbox(page, bbox, scale=scale, grid=8)
-            if adjacent is None:
-                adjacent = [255, 255, 255]
-                method = "fallback_white"
-            else:
-                method = "sampled_median"
-
-            border_rgb = [0, 0, 0]
-            contrast_against_border = float(round(contrast_ratio(border_rgb, adjacent), 3))
-
-            w["non_text_contrast"] = {
-                "adjacent_rgb": adjacent,
-                "method": method,
-                "contrast_against_stroke": None,
-                "contrast_against_fill": None,
-                "contrast_against_border": contrast_against_border,
-                "passes_3_1": contrast_against_border >= 3.0
-            }
-
-
-##### resize risk annotation ########
-
-def annotate_resize_risk(
-    text_spans: List[Dict[str, Any]],
-    graphics: List[Dict[str, Any]],
-    widgets: List[Dict[str, Any]],
-    pages: List[Dict[str, Any]]
-):
-    spans_by_page: Dict[int, List[Dict[str, Any]]] = {}
-    graphics_by_page: Dict[int, List[Dict[str, Any]]] = {}
-    widgets_by_page: Dict[int, List[Dict[str, Any]]] = {}
-    page_widths = {p["page_index"]: float(p["width"]) for p in pages}
-
-    for sp in text_spans:
-        spans_by_page.setdefault(sp["page_index"], []).append(sp)
-
-    for g in graphics:
-        graphics_by_page.setdefault(g["page_index"], []).append(g)
-
-    for w in widgets:
-        widgets_by_page.setdefault(w["page_index"], []).append(w)
-
-    for sp in text_spans:
-        bbox = sp.get("bbox")
-        if not bbox:
-            continue
-
-        text_w = bbox_width(bbox)
-        text_h = bbox_height(bbox)
-
-        page_index = sp.get("page_index")
-        font_size = float(sp.get("font", {}).get("size", 0.0))
-        enlarged_bbox = scale_bbox_from_center(bbox, 2.0, 2.0)
-
-        fixed_container_ids = []
-        nearby_text_ids = []
-        nearby_graphic_ids = []
-        nearby_widget_ids = []
-        same_line_neighbors = []
-
-        for other in spans_by_page.get(page_index, []):
-            if other.get("id") == sp.get("id"):
-                continue
-
-            other_bbox = other.get("bbox")
-            if not other_bbox:
-                continue
-
-            if bbox_intersects(enlarged_bbox, other_bbox):
-                nearby_text_ids.append(other.get("id"))
-                vertical_close = abs(((bbox[1] + bbox[3]) / 2) - ((other_bbox[1] + other_bbox[3]) / 2)) <= 12
-                if vertical_close:
-                    same_line_neighbors.append(other.get("id"))
-
-        for g in graphics_by_page.get(page_index, []):
-            gb = g.get("bbox")
-            if not gb:
-                continue
-
-            if bbox_intersects(enlarged_bbox, gb):
-                nearby_graphic_ids.append(g.get("id"))
-
-            if bbox_contains(gb, bbox, margin=1):
-                containe_w = bbox_width(gb)
-                containe_h = bbox_height(gb)
-
-                tight_w = containe_w <= text_w * 1.25
-                tight_h = containe_h <= text_h * 1.25
-
-                if tight_w or tight_h:
-                    fixed_container_ids.append(g.get("id"))
-
-        for w in widgets_by_page.get(page_index, []):
-            wb = w.get("bbox")
-            if not wb:
-                continue
-
-            if bbox_intersects(enlarged_bbox, wb):
-                nearby_widget_ids.append(w.get("id"))
-
-            if bbox_contains(wb, bbox, margin=1):
-                containe_w = bbox_width(wb)
-                containe_h = bbox_height(wb)
-
-                tight_w = containe_w <= text_w * 1.25
-                tight_h = containe_h <= text_h * 1.25
-
-                if tight_w or tight_h:
-                    fixed_container_ids.append(w.get("id"))
-
-        risk_score = 0
-
-        if enlarged_bbox[0] < 0 or enlarged_bbox[2] > page_widths.get(page_index, float("inf")):
-            risk_score += 2
-
-        if font_size <= 10:
-            risk_score += 1
-
-        risk_score += min(2, len(nearby_widget_ids))
-        risk_score += min(2, len(nearby_graphic_ids))
-        risk_score += min(2, len(nearby_text_ids))
-        risk_score += min(3, len(fixed_container_ids))
-
-        if same_line_neighbors:
-            risk_score += 1
-
-        sp["resize_risk"] = {
-            "font_size_pt": font_size,
-            "is_small_text": font_size <= 10,
-            "span_width": text_w,
-            "span_height": text_h,
-            "estimated_scale_200_bbox": [float(x) for x in enlarged_bbox],
-            "has_nearby_text": len(nearby_text_ids) > 0,
-            "nearby_text_ids": nearby_text_ids,
-            "has_nearby_graphic": len(nearby_graphic_ids) > 0,
-            "nearby_graphic_ids": nearby_graphic_ids,
-            "has_nearby_widget": len(nearby_widget_ids) > 0,
-            "nearby_widget_ids": nearby_widget_ids,
-            "would_overlap_on_scale_200": bool(
-                nearby_text_ids or nearby_graphic_ids or nearby_widget_ids
-            ),
-            "risk_score": risk_score
-        }
 
 
 ##### wcag 1.4.1 constants and helpers ########
@@ -2281,5 +2069,630 @@ def combine_nearby_spans(
     return " ".join(parts).strip()
 
 
+############## 1.4 wcag ################
+def render_page_to_array(page: fitz.Page, scale: float = 2.0):
+    mat = fitz.Matrix(scale, scale)
+    pix = page.get_pixmap(matrix=mat, alpha=False)
+    if pix.n < 3:
+        return None, None
+    img = np.frombuffer(pix.samples, dtype=np.uint8).reshape(pix.height, pix.width, pix.n)
+    return img, scale
 
 
+def bbox_to_pixel_rect(bbox: List[float], img_shape, scale: float):
+    h, w = img_shape[:2]
+    x0, y0, x1, y1 = bbox
+    px0 = int(max(0, min(w - 1, round(x0 * scale))))
+    py0 = int(max(0, min(h - 1, round(y0 * scale))))
+    px1 = int(max(0, min(w - 1, round(x1 * scale))))
+    py1 = int(max(0, min(h - 1, round(y1 * scale))))
+    return px0, py0, px1, py1
+
+
+def median_rgb_from_pixels(pixels: np.ndarray) -> Optional[List[int]]:
+    if pixels is None or len(pixels) == 0:
+        return None
+    med = np.median(pixels[:, :3], axis=0)
+    return [int(med[0]), int(med[1]), int(med[2])] 
+
+def sample_outside_ring_rgb(
+    page: fitz.Page,
+    bbox: List[float],
+    scale: float = 2.0,
+    ring_px: int = 4
+) -> Optional[List[int]]:
+    img, scale = render_page_to_array(page, scale=scale)
+    if img is None:
+        return None
+
+    px0, py0, px1, py1 = bbox_to_pixel_rect(bbox, img.shape, scale)
+    if px1 <= px0 or py1 <= py0:
+        return None
+
+    h, w = img.shape[:2]
+
+    ox0 = max(0, px0 - ring_px)
+    oy0 = max(0, py0 - ring_px)
+    ox1 = min(w - 1, px1 + ring_px)
+    oy1 = min(h - 1, py1 + ring_px)
+
+    samples = []
+
+    # top strip
+    if oy0 < py0:
+        top = img[oy0:py0, ox0:ox1]
+        if top.size:
+            samples.append(top.reshape(-1, img.shape[2]))
+
+    # bottom strip
+    if py1 < oy1:
+        bottom = img[py1:oy1, ox0:ox1]
+        if bottom.size:
+            samples.append(bottom.reshape(-1, img.shape[2]))
+
+    # left strip
+    if ox0 < px0:
+        left = img[py0:py1, ox0:px0]
+        if left.size:
+            samples.append(left.reshape(-1, img.shape[2]))
+
+    # right strip
+    if px1 < ox1:
+        right = img[py0:py1, px1:ox1]
+        if right.size:
+            samples.append(right.reshape(-1, img.shape[2]))
+
+    if not samples:
+        return None
+
+    pixels = np.vstack(samples)
+    return median_rgb_from_pixels(pixels)
+def sample_inside_bbox_rgb(
+    page: fitz.Page,
+    bbox: List[float],
+    scale: float = 2.0,
+    pad_ratio: float = 0.12
+) -> Optional[List[int]]:
+    img, scale = render_page_to_array(page, scale=scale)
+    if img is None:
+        return None
+
+    px0, py0, px1, py1 = bbox_to_pixel_rect(bbox, img.shape, scale)
+    if px1 <= px0 or py1 <= py0:
+        return None
+
+    pad = max(1, int(min(px1 - px0, py1 - py0) * pad_ratio))
+    sx0 = min(px1 - 1, px0 + pad)
+    sy0 = min(py1 - 1, py0 + pad)
+    sx1 = max(px0 + 1, px1 - pad)
+    sy1 = max(py0 + 1, py1 - pad)
+
+    if sx1 <= sx0 or sy1 <= sy0:
+        sx0, sy0, sx1, sy1 = px0, py0, px1, py1
+
+    region = img[sy0:sy1, sx0:sx1]
+    if region.size == 0:
+        return None
+
+    return median_rgb_from_pixels(region.reshape(-1, img.shape[2]))
+
+def annotate_graphics_non_text_contrast(
+    doc: fitz.Document,
+    graphics: List[Dict[str, Any]],
+    scale: float = 2.0
+):
+    graphics_by_page: Dict[int, List[Dict[str, Any]]] = {}
+    for g in graphics:
+        graphics_by_page.setdefault(g["page_index"], []).append(g)
+
+    for page_index, page_graphics in graphics_by_page.items():
+        page = doc.load_page(page_index)
+
+        for g in page_graphics:
+            bbox = g.get("bbox")
+            if not bbox:
+                g["non_text_contrast"] = default_non_text_contrast()
+                continue
+
+            adjacent = sample_outside_ring_rgb(page, bbox, scale=scale, ring_px=4)
+            if adjacent is None:
+                adjacent = [255, 255, 255]
+                method = "outside_ring_fallback_white"
+            else:
+                method = "outside_ring"
+
+            stroke_rgb = g.get("stroke_rgb")
+            fill_rgb = g.get("fill_rgb")
+
+            contrast_against_stroke = None
+            contrast_against_fill = None
+
+            if stroke_rgb and len(stroke_rgb) >= 3:
+                contrast_against_stroke = float(round(contrast_ratio(stroke_rgb, adjacent), 3))
+
+            if fill_rgb and len(fill_rgb) >= 3:
+                contrast_against_fill = float(round(contrast_ratio(fill_rgb, adjacent), 3))
+
+            # Prefer stroke when present; otherwise fill.
+            # This is usually more realistic than always taking the minimum.
+            effective_contrast = contrast_against_stroke
+            if effective_contrast is None:
+                effective_contrast = contrast_against_fill
+            elif contrast_against_fill is not None:
+                effective_contrast = min(contrast_against_stroke, contrast_against_fill)
+
+            g["non_text_contrast"] = {
+                "adjacent_rgb": adjacent,
+                "method": method,
+                "contrast_against_stroke": contrast_against_stroke,
+                "contrast_against_fill": contrast_against_fill,
+                "contrast_against_border": None,
+                "passes_3_1": effective_contrast >= 3.0 if effective_contrast is not None else None
+            }
+def sample_widget_border_rgb(
+    page: fitz.Page,
+    bbox: List[float],
+    scale: float = 2.0,
+    edge_px: int = 2
+) -> Optional[List[int]]:
+    img, scale = render_page_to_array(page, scale=scale)
+    if img is None:
+        return None
+
+    px0, py0, px1, py1 = bbox_to_pixel_rect(bbox, img.shape, scale)
+    if px1 <= px0 or py1 <= py0:
+        return None
+
+    samples = []
+
+    # top edge
+    top = img[py0:min(py0 + edge_px, py1), px0:px1]
+    if top.size:
+        samples.append(top.reshape(-1, img.shape[2]))
+
+    # bottom edge
+    bottom = img[max(py0, py1 - edge_px):py1, px0:px1]
+    if bottom.size:
+        samples.append(bottom.reshape(-1, img.shape[2]))
+
+    # left edge
+    left = img[py0:py1, px0:min(px0 + edge_px, px1)]
+    if left.size:
+        samples.append(left.reshape(-1, img.shape[2]))
+
+    # right edge
+    right = img[py0:py1, max(px0, px1 - edge_px):px1]
+    if right.size:
+        samples.append(right.reshape(-1, img.shape[2]))
+
+    if not samples:
+        return None
+
+    pixels = np.vstack(samples)
+    return median_rgb_from_pixels(pixels)  
+def annotate_widgets_non_text_contrast(
+    doc: fitz.Document,
+    widgets: List[Dict[str, Any]],
+    scale: float = 2.0
+):
+    widgets_by_page: Dict[int, List[Dict[str, Any]]] = {}
+    for w in widgets:
+        widgets_by_page.setdefault(w["page_index"], []).append(w)
+
+    for page_index, page_widgets in widgets_by_page.items():
+        page = doc.load_page(page_index)
+
+        for w in page_widgets:
+            bbox = w.get("bbox")
+            if not bbox:
+                w["non_text_contrast"] = default_non_text_contrast()
+                continue
+
+            adjacent = sample_outside_ring_rgb(page, bbox, scale=scale, ring_px=4)
+            border_rgb = sample_widget_border_rgb(page, bbox, scale=scale, edge_px=2)
+
+            method = "sampled_widget_border_and_outside_ring"
+
+            if adjacent is None:
+                adjacent = [255, 255, 255]
+                method += "_fallback_adjacent_white"
+
+            contrast_against_border = None
+            if border_rgb is not None:
+                contrast_against_border = float(round(contrast_ratio(border_rgb, adjacent), 3))
+
+            w["non_text_contrast"] = {
+                "adjacent_rgb": adjacent,
+                "method": method,
+                "contrast_against_stroke": None,
+                "contrast_against_fill": None,
+                "contrast_against_border": contrast_against_border,
+                "border_rgb": border_rgb,
+                "passes_3_1": contrast_against_border >= 3.0 if contrast_against_border is not None else None
+            }          
+
+def is_likely_decorative_graphic(graphic: Dict[str, Any], page_width: float, page_height: float) -> bool:
+    bbox = graphic.get("bbox")
+    if not bbox:
+        return True
+
+    w = bbox_width(bbox)
+    h = bbox_height(bbox)
+    area = w * h
+    page_area = page_width * page_height if page_width > 0 and page_height > 0 else 0
+
+    opacity = graphic.get("opacity")
+    stroke_width = graphic.get("stroke_width") or 0.0
+
+    # very large filled background-like regions
+    if page_area > 0 and area / page_area > 0.6:
+        return True
+
+    # very thin separator lines
+    if (h <= 2 and w >= page_width * 0.5) or (w <= 2 and h >= page_height * 0.5):
+        return True
+
+    # nearly invisible
+    if opacity is not None and opacity < 0.15:
+        return True
+
+    # no visible style
+    if not graphic.get("stroke_rgb") and not graphic.get("fill_rgb"):
+        return True
+
+    return False            
+def graphic_overlaps_widget(graphic: Dict[str, Any], widgets: List[Dict[str, Any]], margin: float = 2.0) -> bool:
+    gb = graphic.get("bbox")
+    if not gb:
+        return False
+
+    for w in widgets:
+        wb = w.get("bbox")
+        if not wb:
+            continue
+        if bbox_intersects(gb, wb, margin=margin):
+            return True
+    return False
+
+
+def is_likely_layout_or_decorative_graphic(
+    graphic: Dict[str, Any],
+    page_width: float,
+    page_height: float
+) -> bool:
+    bbox = graphic.get("bbox")
+    if not bbox:
+        return True
+
+    w = bbox_width(bbox)
+    h = bbox_height(bbox)
+    area = w * h
+    page_area = page_width * page_height if page_width > 0 and page_height > 0 else 0
+
+    fill_rgb = graphic.get("fill_rgb")
+    stroke_rgb = graphic.get("stroke_rgb")
+    stroke_width = graphic.get("stroke_width") or 0.0
+    gtype = graphic.get("type")
+
+    # 1) huge/light panel backgrounds
+    if page_area > 0 and area / page_area >= 0.025:
+        if fill_rgb and all(c >= 235 for c in fill_rgb[:3]):
+            return True
+
+    # 2) white or near-white helper boxes inside panels
+    if fill_rgb and all(c >= 245 for c in fill_rgb[:3]):
+        if area >= 1500:
+            return True
+
+    # 3) long thin separator lines
+    if gtype == "s":
+        if (h <= 2.0 and w >= page_width * 0.5) or (w <= 2.0 and h >= page_height * 0.5):
+            return True
+
+    # 4) very light filled rectangles used as containers/cards
+    if gtype == "f" and fill_rgb and all(c >= 240 for c in fill_rgb[:3]):
+        if w >= 150 and h >= 40:
+            return True
+
+    return False
+
+#########        wcag   1.4.4 helpers        ##########
+from typing import Any, Dict, List, Optional
+
+
+def estimate_resized_text_bbox_200(span_bbox: List[float]) -> List[float]:
+    x0, y0, x1, y1 = span_bbox
+    w = max(0.0, x1 - x0)
+    h = max(0.0, y1 - y0)
+
+    # Heuristic 200% enlargement:
+    # width grows more strongly than height, with slight left/up padding
+    return [
+        x0 - 0.10 * w,
+        y0 - 0.20 * h,
+        x0 + 2.00 * w,
+        y0 + 1.80 * h,
+    ]
+
+
+def bbox_exceeds_container(candidate_bbox: List[float], container: List[float], margin: float = 1.0) -> bool:
+    return not bbox_contains(container, candidate_bbox, margin=margin)
+
+
+def is_same_line(span1: Dict[str, Any], span2: Dict[str, Any], y_tol: float = 8.0) -> bool:
+    if span1.get("page_index") != span2.get("page_index"):
+        return False
+
+    b1 = span1.get("bbox")
+    b2 = span2.get("bbox")
+    if not b1 or not b2:
+        return False
+
+    c1y = (b1[1] + b1[3]) / 2.0
+    c2y = (b2[1] + b2[3]) / 2.0
+    return abs(c1y - c2y) <= y_tol
+
+
+def looks_like_paragraph_continuation(span1: Dict[str, Any], span2: Dict[str, Any]) -> bool:
+    if span1.get("page_index") != span2.get("page_index"):
+        return False
+
+    b1 = span1.get("bbox")
+    b2 = span2.get("bbox")
+    if not b1 or not b2:
+        return False
+
+    # same line => not paragraph continuation
+    if is_same_line(span1, span2, y_tol=8.0):
+        return False
+
+    # vertically near
+    v_gap = _vertical_gap(b1, b2)
+
+    # left aligned or strongly overlapping in x => likely wrapped paragraph lines
+    left_aligned = abs(b1[0] - b2[0]) <= 25.0
+
+    overlap = max(0.0, min(b1[2], b2[2]) - max(b1[0], b2[0]))
+    min_width = min(bbox_width(b1), bbox_width(b2))
+    overlap_ratio = (overlap / min_width) if min_width > 0 else 0.0
+
+    return v_gap <= 14.0 and (left_aligned or overlap_ratio >= 0.4)
+
+
+def find_line_box_container(
+    span_bbox: List[float],
+    page_graphics: List[Dict[str, Any]],
+    tolerance: float = 3.0
+) -> Optional[List[float]]:
+    """
+    Detect a rectangular box around text when the box is drawn using 4 separate line graphics.
+    """
+    x0, y0, x1, y1 = span_bbox
+
+    horizontals = []
+    verticals = []
+
+    for g in page_graphics:
+        gb = g.get("bbox")
+        if not gb or g.get("type") != "s":
+            continue
+
+        w = bbox_width(gb)
+        h = bbox_height(gb)
+
+        if h <= tolerance and w > 20:
+            horizontals.append(gb)
+
+        if w <= tolerance and h > 20:
+            verticals.append(gb)
+
+    top_candidates = []
+    bottom_candidates = []
+    left_candidates = []
+    right_candidates = []
+
+    for hb in horizontals:
+        hx0, hy0, hx1, hy1 = hb
+        if hx0 <= x0 + tolerance and hx1 >= x1 - tolerance:
+            cy = (hy0 + hy1) / 2.0
+            if cy <= y0 + tolerance:
+                top_candidates.append(hb)
+            if cy >= y1 - tolerance:
+                bottom_candidates.append(hb)
+
+    for vb in verticals:
+        vx0, vy0, vx1, vy1 = vb
+        if vy0 <= y0 + tolerance and vy1 >= y1 - tolerance:
+            cx = (vx0 + vx1) / 2.0
+            if cx <= x0 + tolerance:
+                left_candidates.append(vb)
+            if cx >= x1 - tolerance:
+                right_candidates.append(vb)
+
+    if not (top_candidates and bottom_candidates and left_candidates and right_candidates):
+        return None
+
+    top = min(top_candidates, key=lambda b: abs(((b[1] + b[3]) / 2.0) - y0))
+    bottom = min(bottom_candidates, key=lambda b: abs(((b[1] + b[3]) / 2.0) - y1))
+    left = min(left_candidates, key=lambda b: abs(((b[0] + b[2]) / 2.0) - x0))
+    right = min(right_candidates, key=lambda b: abs(((b[0] + b[2]) / 2.0) - x1))
+
+    container = [
+        min(left[0], left[2]),
+        min(top[1], top[3]),
+        max(right[0], right[2]),
+        max(bottom[1], bottom[3]),
+    ]
+
+    if bbox_contains(container, span_bbox, margin=2.0):
+        return container
+
+    return None
+
+def annotate_resize_risk(
+    text_spans: List[Dict[str, Any]],
+    graphics: List[Dict[str, Any]],
+    widgets: List[Dict[str, Any]],
+    pages: List[Dict[str, Any]]
+):
+    spans_by_page: Dict[int, List[Dict[str, Any]]] = {}
+    graphics_by_page: Dict[int, List[Dict[str, Any]]] = {}
+    widgets_by_page: Dict[int, List[Dict[str, Any]]] = {}
+    page_dims = {
+        p["page_index"]: (float(p["width"]), float(p["height"]))
+        for p in pages
+    }
+
+    for sp in text_spans:
+        spans_by_page.setdefault(sp["page_index"], []).append(sp)
+
+    for g in graphics:
+        graphics_by_page.setdefault(g["page_index"], []).append(g)
+
+    for w in widgets:
+        widgets_by_page.setdefault(w["page_index"], []).append(w)
+
+    for sp in text_spans:
+        bbox = sp.get("bbox")
+        if not bbox:
+            continue
+
+        sem = sp.get("presentation_semantics", {})
+        page_index = sp.get("page_index")
+        page_width, page_height = page_dims.get(page_index, (0.0, 0.0))
+
+        text_w = bbox_width(bbox)
+        text_h = bbox_height(bbox)
+        font_size = float(sp.get("font", {}).get("size", 0.0))
+        enlarged_bbox = estimate_resized_text_bbox_200(bbox)
+
+        nearby_text_ids = []
+        nearby_graphic_ids = []
+        nearby_widget_ids = []
+        same_line_overlap_ids = []
+        clipping_container_ids = []
+        paragraph_flow_neighbors = []
+
+        meaningful_graphics = []
+        for g in graphics_by_page.get(page_index, []):
+            if is_likely_layout_or_decorative_graphic(g, page_width, page_height):
+                continue
+            meaningful_graphics.append(g)
+
+        # text collisions
+        for other in spans_by_page.get(page_index, []):
+            if other.get("id") == sp.get("id"):
+                continue
+
+            ob = other.get("bbox")
+            if not ob:
+                continue
+
+            if bbox_intersects(enlarged_bbox, ob):
+                nearby_text_ids.append(other.get("id"))
+
+                if is_same_line(sp, other):
+                    same_line_overlap_ids.append(other.get("id"))
+                elif looks_like_paragraph_continuation(sp, other):
+                    paragraph_flow_neighbors.append(other.get("id"))
+
+        # graphic collisions and tight graphic containers
+        for g in meaningful_graphics:
+            gb = g.get("bbox")
+            if not gb:
+                continue
+
+            if bbox_intersects(enlarged_bbox, gb):
+                nearby_graphic_ids.append(g.get("id"))
+
+            if bbox_contains(gb, bbox, margin=1.0):
+                gw = bbox_width(gb)
+                gh = bbox_height(gb)
+
+                if gw <= text_w * 1.4 or gh <= text_h * 1.6:
+                    if bbox_exceeds_container(enlarged_bbox, gb, margin=1.0):
+                        clipping_container_ids.append(g.get("id"))
+
+        # grouped line-box container detection
+        line_box_container = find_line_box_container(bbox, meaningful_graphics)
+        if line_box_container is not None:
+            if bbox_exceeds_container(enlarged_bbox, line_box_container, margin=1.0):
+                clipping_container_ids.append(f"line_box_{sp.get('id')}")
+
+        # widget collisions and tight widget containers
+        for w in widgets_by_page.get(page_index, []):
+            wb = w.get("bbox")
+            if not wb:
+                continue
+
+            if bbox_intersects(enlarged_bbox, wb):
+                nearby_widget_ids.append(w.get("id"))
+
+            if bbox_contains(wb, bbox, margin=1.0):
+                ww = bbox_width(wb)
+                wh = bbox_height(wb)
+
+                if ww <= text_w * 1.6 or wh <= text_h * 1.8:
+                    if bbox_exceeds_container(enlarged_bbox, wb, margin=1.0):
+                        clipping_container_ids.append(w.get("id"))
+
+        risk_score = 0
+
+        # page overflow
+        if enlarged_bbox[0] < 0 or enlarged_bbox[2] > page_width:
+            risk_score += 2
+        if enlarged_bbox[1] < 0 or enlarged_bbox[3] > page_height:
+            risk_score += 1
+
+        # small text slightly more vulnerable
+        if font_size <= 10:
+            risk_score += 1
+
+        # strongest evidence
+        if clipping_container_ids:
+            risk_score += 4
+
+        if same_line_overlap_ids:
+            risk_score += min(4, len(same_line_overlap_ids) * 2)
+
+        # moderate evidence
+        risk_score += min(2, len(nearby_widget_ids))
+        risk_score += min(2, len(nearby_graphic_ids))
+
+        # count only non-paragraph text collisions
+        non_paragraph_text_collisions = max(
+            0,
+            len(nearby_text_ids) - len(paragraph_flow_neighbors) - len(same_line_overlap_ids)
+        )
+        risk_score += min(2, non_paragraph_text_collisions)
+
+        suppressed = False
+        if sem.get("is_text_in_image_context", False):
+            risk_score = max(0, risk_score - 3)
+            suppressed = True
+        if sem.get("is_logo_text", False) or sem.get("is_decorative_text", False):
+            risk_score = max(0, risk_score - 2)
+            suppressed = True
+
+        sp["resize_risk"] = {
+            "font_size_pt": font_size,
+            "is_small_text": font_size <= 10,
+            "span_width": text_w,
+            "span_height": text_h,
+            "estimated_scale_200_bbox": [float(x) for x in enlarged_bbox],
+            "has_nearby_text": bool(nearby_text_ids),
+            "nearby_text_ids": nearby_text_ids,
+            "same_line_overlap_ids": same_line_overlap_ids,
+            "paragraph_flow_neighbor_ids": paragraph_flow_neighbors,
+            "has_nearby_graphic": bool(nearby_graphic_ids),
+            "nearby_graphic_ids": nearby_graphic_ids,
+            "has_nearby_widget": bool(nearby_widget_ids),
+            "nearby_widget_ids": nearby_widget_ids,
+            "clipping_container_ids": clipping_container_ids,
+            "would_overlap_on_scale_200": bool(
+                nearby_text_ids or nearby_graphic_ids or nearby_widget_ids or clipping_container_ids
+            ),
+            "suppressed_due_to_semantics": suppressed,
+            "risk_score": risk_score,
+        }
+        

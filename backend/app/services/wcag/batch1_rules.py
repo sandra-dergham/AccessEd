@@ -1,6 +1,7 @@
 from .issue import make_issue
 from typing import Dict,List,Any
-from backend.app.services.helper_function_b1 import (detect_non_text_controls_input_1_1_1,detect_non_text_images_1_1_1,detect_non_text_media_1_1_1,combine_nearby_spans, matching_widget_for_acrofield,normalize_label,collect_label,detect_link_color_only,detect_explicit_color_only_instructions,detect_required_field_color_only,detect_repeated_identical_marker_or_label_color_only)
+from backend.app.services.helper_function_b1 import (graphic_overlaps_widget,is_likely_layout_or_decorative_graphic,
+                                                    combine_nearby_spans, matching_widget_for_acrofield,normalize_label,collect_label,detect_link_color_only,detect_explicit_color_only_instructions,detect_required_field_color_only,detect_repeated_identical_marker_or_label_color_only)
     
 
 
@@ -55,7 +56,211 @@ def rule_1_4_3(document: dict) -> list[dict]:
                         recommendation=recommendation,
                     ))
                    
-    return issues      
+    return issues  
+ 
+#1.4.11
+def rule_1_4_11(document: dict) -> list[dict]:
+    issues: list[dict] = []
+    doc = document.get("document", document)
+
+    graphics = doc.get("graphics", [])
+    widgets = doc.get("widgets", [])
+    pages = doc.get("pages", [])
+
+    page_dims = {
+        p["page_index"]: (float(p.get("width", 0.0)), float(p.get("height", 0.0)))
+        for p in pages
+    }
+
+    for graphic in graphics:
+        page_index = graphic.get("page_index")
+        page_width, page_height = page_dims.get(page_index, (0.0, 0.0))
+
+        # skip graphics that are really widget visuals
+        if graphic_overlaps_widget(graphic, widgets, margin=1.0):
+            continue
+
+        # skip layout/decorative shapes
+        if is_likely_layout_or_decorative_graphic(graphic, page_width, page_height):
+            continue
+
+        ntc = graphic.get("non_text_contrast", {})
+        passed = ntc.get("passes_3_1")
+
+        if passed is False:
+            issues.append(
+                make_issue(
+                    criterion="1.4.11",
+                    issue="insufficient_non_text_contrast_graphic",
+                    location={
+                        "page": page_index,
+                        "graphic_id": graphic.get("id"),
+                    },
+                    severity="high",
+                    recommendation="Ensure this graphical object has a contrast ratio of at least 3:1 against adjacent colors.",
+                )
+            )
+
+    for widget in widgets:
+        if widget.get("ui_state") == "inactive":
+            continue
+
+        ntc = widget.get("non_text_contrast", {})
+        passed = ntc.get("passes_3_1")
+
+        if passed is False:
+            issues.append(
+                make_issue(
+                    criterion="1.4.11",
+                    issue="insufficient_non_text_contrast_ui_component",
+                    location={
+                        "page": widget.get("page_index"),
+                        "widget_id": widget.get("id"),
+                    },
+                    severity="high",
+                    recommendation="Ensure this user interface component has a contrast ratio of at least 3:1 against adjacent colors.",
+                )
+            )
+
+    return issues 
+
+# 1.4.4
+def rule_1_4_4(document: dict) -> list[dict]:
+    issues: list[dict] = []
+    doc = document.get("document", document)
+
+    text_spans = doc.get("text_spans", [])
+    reported_ids = set()
+
+    spans_by_page: dict[int, list[dict]] = {}
+    for sp in text_spans:
+        p = sp.get("page_index")
+        if p is not None:
+            spans_by_page.setdefault(p, []).append(sp)
+
+    def _looks_like_paragraph_flow_here(target: dict, page_spans: list[dict]) -> bool:
+        tb = target.get("bbox")
+        if not tb:
+            return False
+
+        tx0, ty0, tx1, ty1 = tb
+        tw = max(0.0, tx1 - tx0)
+
+        for other in page_spans:
+            if other.get("id") == target.get("id"):
+                continue
+
+            ob = other.get("bbox")
+            if not ob:
+                continue
+
+            ox0, oy0, ox1, oy1 = ob
+            ow = max(0.0, ox1 - ox0)
+
+            if other.get("page_index") != target.get("page_index"):
+                continue
+
+            cty = (ty0 + ty1) / 2.0
+            coy = (oy0 + oy1) / 2.0
+            if abs(cty - coy) <= 8.0:
+                continue
+
+            v_gap = max(ty0 - oy1, oy0 - ty1, 0.0)
+            if v_gap > 12.0:
+                continue
+
+            overlap = max(0.0, min(tx1, ox1) - max(tx0, ox0))
+            min_w = min(tw, ow)
+            overlap_ratio = (overlap / min_w) if min_w > 0 else 0.0
+            left_aligned = abs(tx0 - ox0) <= 25.0
+
+            if overlap_ratio >= 0.4 or left_aligned:
+                return True
+
+        return False
+
+    for sp in text_spans:
+        span_id = sp.get("id")
+        if not span_id or span_id in reported_ids:
+            continue
+
+        sem = sp.get("presentation_semantics", {})
+        rr = sp.get("resize_risk", {})
+        text = (sp.get("text") or "").strip()
+        page_index = sp.get("page_index")
+
+        if not text:
+            continue
+
+        # Skip weaker targets / exceptions
+        if sem.get("is_text_in_image_context", False):
+            continue
+        if sem.get("is_logo_text", False):
+            continue
+        if sem.get("is_decorative_text", False):
+            continue
+
+        risk_score = rr.get("risk_score", 0)
+        same_line_overlap_ids = rr.get("same_line_overlap_ids", [])
+        clipping_container_ids = rr.get("clipping_container_ids", [])
+        nearby_widget_ids = rr.get("nearby_widget_ids", [])
+        nearby_graphic_ids = rr.get("nearby_graphic_ids", [])
+        paragraph_flow_neighbor_ids = rr.get("paragraph_flow_neighbor_ids", [])
+
+        paragraph_like = bool(paragraph_flow_neighbor_ids) or _looks_like_paragraph_flow_here(
+            sp, spans_by_page.get(page_index, [])
+        )
+
+        # Suppress ordinary paragraph wrapping
+        if (
+            paragraph_like
+            and not same_line_overlap_ids
+            and not clipping_container_ids
+            and not nearby_widget_ids
+        ):
+            continue
+
+        # Suppress likely short decorative banner text
+        if (
+            nearby_graphic_ids
+            and not same_line_overlap_ids
+            and not clipping_container_ids
+            and not nearby_widget_ids
+            and risk_score <= 2
+            and len(text.split()) <= 4
+        ):
+            continue
+
+        likely_failure = (
+            risk_score >= 4
+            or bool(clipping_container_ids)
+            or len(same_line_overlap_ids) >= 1
+            or len(nearby_widget_ids) >= 1
+        )
+
+        if not likely_failure:
+            continue
+
+        issues.append(
+            make_issue(
+                criterion="1.4.4",
+                issue="text_may_not_resize_to_200_percent_without_loss",
+                location={
+                    "page": page_index,
+                    "span_id": span_id,
+                    "text": text,
+                },
+                severity="low" if risk_score < 7 else "meduim",
+                recommendation=(
+                    "This text may not resize to 200% without overlapping nearby content or exceeding its available space. "
+                    "Review fixed containers, crowded labels, and nearby interactive elements."
+                ),
+            )
+        )
+        reported_ids.add(span_id)
+
+    return issues
+
 
 #############
 # WCAG 1.2
@@ -532,7 +737,7 @@ def rule_2_5_4(document: dict) -> list[dict]:
         for m in media_occurrences
     )
 
-    # optional weak keyword signal from trigger names / locations
+    # motion keywords 
     motion_keywords = {"motion", "tilt", "shake", "orientation", "accelerometer", "gyro", "gyroscope"}
     trigger_text = " ".join(
         str(t.get("trigger", "")) + " " + str(t.get("location", ""))
@@ -570,100 +775,8 @@ def rule_2_5_4(document: dict) -> list[dict]:
 # WCAG 1.1.1
 ############
 
-def detect_wcag_1_1_1(document: dict) -> List[dict]:
-    issues: List[dict] = []
-
-    issues.extend(detect_non_text_controls_input_1_1_1(document))
-    issues.extend(detect_non_text_media_1_1_1(document))
-    issues.extend(detect_non_text_images_1_1_1(document))
-
-    return issues
 
 
-# rule 1.4.4
-# 1.4.4 resize issue
-def rule_1_4_4(document: dict) -> list[dict]:
-        issues: list[dict] = []
-        doc = document.get("document", document)
-
-        text_spans = doc.get("text_spans", [])
-        for text_span in text_spans:
-            resize = text_span.get("resize_risk", {})
-            risk_score = resize.get("risk_score", 0)
-
-            if risk_score >= 6:
-                severity = "high"
-            elif risk_score >= 4:
-                severity = "medium"
-            elif risk_score >= 2:
-                severity = "low"
-            else:
-                severity = None
-
-            if severity:
-                issues.append(
-                    make_issue(
-                    criterion="1.4.4",
-                    issue="potential_resize_issue",
-                    location={
-                        "page": text_span.get("page_index"),
-                        "span_id": text_span.get("id"),
-                    },
-                    severity=severity,
-                    recommendation="Ensure that text can be resized up to 200% without loss of content or functionality. Check that text does not get cut off, overlap, or become unreadable when enlarged.",
-                )
-            )
-
-
-
-
-def rule_1_4_11(document: dict) -> list[dict]:
-    issues: list[dict] = []
-    doc = document.get("document", document)
-
-    graphics = doc.get("graphics", [])
-    widgets = doc.get("widgets", [])
-
-    for graphic in graphics:
-        ntc = graphic.get("non_text_contrast", {})
-        passed = ntc.get("passes_3_1", True)
-
-        if passed is False:
-            issues.append(
-                make_issue(
-                    criterion="1.4.11",
-                    issue="insufficient_non_text_contrast_graphic",
-                    location={
-                        "page": graphic.get("page_index"),
-                        "graphic_id": graphic.get("id"),
-                    },
-                    severity="high",
-                    recommendation="Ensure this graphical object has a contrast ratio of at least 3:1 against adjacent colors.",
-                )
-            )
-
-    for widget in widgets:
-        if widget.get("ui_state") == "inactive":
-            continue
-
-        ntc = widget.get("non_text_contrast", {})
-        passed = ntc.get("passes_3_1", True)
-
-        if passed is False:
-            issues.append(
-                make_issue(
-                    criterion="1.4.11",
-                    issue="insufficient_non_text_contrast_ui_component",
-                    location={
-                        "page": widget.get("page_index"),
-                        "widget_id": widget.get("id"),
-                    },
-                    severity="high",
-                    recommendation="Ensure this user interface component has a contrast ratio of at least 3:1 against adjacent colors.",
-                )
-            )
-
-    return issues
 
 
 def run_batch2_rules(document: dict) -> list[dict]:

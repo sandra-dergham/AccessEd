@@ -4,10 +4,10 @@ from .wcag.batch1_rules import (
     rule_2_5_1,
     rule_2_5_2,
     rule_2_5_3,
-    rule_2_5_4,
+    rule_1_4_4
 )
 
-JSON_PATH = r"backend/tmp_uploads/e48b461f-b956-459c-a51f-f0d8a4d27b39.json"
+JSON_PATH = r"C:\Users\Lenovo\repos\AccessEd\backend\tmp_uploads\1ffd8d94-21d1-456e-9527-aeba43e615ab.json"
 
 
 def main():
@@ -18,7 +18,7 @@ def main():
     issues.extend(rule_2_5_1(document))
     issues.extend(rule_2_5_2(document))
     issues.extend(rule_2_5_3(document))
-    issues.extend(rule_2_5_4(document))
+    issues.extend(rule_1_4_4(document))
 
     print(json.dumps(issues, indent=2, ensure_ascii=False))
     print("\nTotal issues:", len(issues))
