@@ -16,13 +16,13 @@ pytesseract.pytesseract.tesseract_cmd = r"C:\Program Files\Tesseract-OCR\tessera
 
 import numpy as np
 
-from helper_function_b1  import ( pdfminer_bbox_to_pymupdf_bbox,default_presentation_semantics,extract_widgets,annotate_text_in_image_context,annotate_logo_like_text,annotate_decorative_text,
+from wcag.helper_function_b1  import ( pdfminer_bbox_to_pymupdf_bbox,default_presentation_semantics,extract_widgets,annotate_text_in_image_context,annotate_logo_like_text,annotate_decorative_text,
     default_resize_risk,
     annotate_resize_risk,center_of_bbox,annotate_ui_labels,
     annotate_graphics_non_text_contrast,
     annotate_widgets_non_text_contrast,
     extract_media_occurrences
-    ,annotate_media_alternatives
+    ,annotate_media_alternatives,contrast_ratio
     ,extract_embedded_files_pikepdf,extract_media_annotations_pikepdf)
 
 # -----------------------------
@@ -63,27 +63,6 @@ def point_in_bbox(px: float, py: float, b: List[float], margin: float = 2.0) -> 
     x0, y0, x1, y1 = b
     return (x0 - margin) <= px <= (x1 + margin) and (y0 - margin) <= py <= (y1 + margin)
 
-def srgb_channel_to_linear(c: float) -> float:
-    c = c / 255.0
-    if c <= 0.04045:
-        return c / 12.92
-    return ((c + 0.055) / 1.055) ** 2.4
-
-
-def relative_luminance(rgb: List[int]) -> float:
-    r, g, b = rgb
-    R = srgb_channel_to_linear(r)
-    G = srgb_channel_to_linear(g)
-    B = srgb_channel_to_linear(b)
-    return 0.2126 * R + 0.7152 * G + 0.0722 * B
-
-
-def contrast_ratio(fg_rgb: List[int], bg_rgb: List[int]) -> float:
-    L1 = relative_luminance(fg_rgb)
-    L2 = relative_luminance(bg_rgb)
-    lighter = max(L1, L2)
-    darker = min(L1, L2)
-    return (lighter + 0.05) / (darker + 0.05)
 
 def is_bold_font(font: Dict[str, Any]) -> bool:
     name = (font.get("name") or "").lower()
@@ -251,9 +230,11 @@ def extract_images(page: fitz.Page, doc: fitz.Document, page_index: int):
                 "page_index": page_index,
                 "bbox": [float(r.x0), float(r.y0), float(r.x1), float(r.y1)],
                 "alt_text": None,
+                "alt_source": None,
+                "struct_figure_id": None,
                 "ocr_text": None,
                 "ocr_confidence": None
-            })
+})
 
     return image_assets, image_occurrences,asset_bytes_map
 
@@ -488,6 +469,207 @@ def _pike_to_py(obj):
         return str(obj)
 
 
+##########     mapping alt text to images (from  tree structure)    ###############
+def _flatten_structure_nodes(tree: Any) -> List[Dict[str, Any]]:
+    nodes: List[Dict[str, Any]] = []
+
+    def walk(node):
+        if not isinstance(node, dict):
+            return
+        nodes.append(node)
+        for child in node.get("children", []):
+            if isinstance(child, dict):
+                walk(child)
+
+    if isinstance(tree, list):
+        for root in tree:
+            walk(root)
+
+    return nodes
+def extract_figure_nodes_from_structure(structure: Dict[str, Any]) -> List[Dict[str, Any]]:
+    figures: List[Dict[str, Any]] = []
+
+    tree = structure.get("tree")
+    flat_nodes = _flatten_structure_nodes(tree)
+
+    for node in flat_nodes:
+        if node.get("role") != "Figure":
+            continue
+
+        alt = node.get("alt")
+        actual_text = node.get("actual_text")
+
+        figures.append({
+            "id": node.get("id"),
+            "role": "Figure",
+            "alt": alt,
+            "actual_text": actual_text,
+            "is_decorative": alt is not None and str(alt).strip() == "",
+            "depth": node.get("depth"),
+            "mcids": node.get("mcids", []),
+            "page_object_ref": node.get("page_object_ref"),
+            "children": node.get("children", []),
+        })
+
+    return figures
+
+def map_single_figure_alt_to_single_image(
+    structure: Dict[str, Any],
+    image_occurrences: List[Dict[str, Any]]
+) -> None:
+    """
+    Temporary safe fallback:
+    only map alt text when there is exactly one figure in structure
+    and exactly one image occurrence in the document.
+    """
+    figures = structure.get("figures", [])
+
+    if len(figures) != 1:
+        return
+    if len(image_occurrences) != 1:
+        return
+
+    fig = figures[0]
+    occ = image_occurrences[0]
+
+    alt = fig.get("alt")
+    actual_text = fig.get("actual_text")
+
+    text_alt = alt if alt is not None else actual_text
+
+    if occ.get("alt_source") is not None:
+       return
+
+    occ["alt_text"] = text_alt
+    occ["alt_source"] = "structure_single_match"
+    occ["struct_figure_id"] = fig.get("id")
+
+def map_figures_to_images_by_order(
+    structure: Dict[str, Any],
+    image_occurrences: List[Dict[str, Any]]
+) -> None:
+    """
+    Controlled phase-2 fallback:
+    if the number of structure figures matches the number of image occurrences,
+    map them in order.
+
+    This is only reliable for controlled test PDFs.
+    """
+    figures = structure.get("figures", [])
+
+    if not figures:
+        return
+
+    if len(figures) != len(image_occurrences):
+        return
+
+    for fig, occ in zip(figures, image_occurrences):
+        alt = fig.get("alt")
+        actual_text = fig.get("actual_text")
+        text_alt = alt if alt is not None else actual_text
+
+        if occ.get("alt_source") is not None:
+            continue
+
+        occ["alt_text"] = text_alt
+        occ["alt_source"] = "structure_order_match"
+        occ["struct_figure_id"] = fig.get("id")
+
+def attach_page_index_to_figures(
+    figures: List[Dict[str, Any]],
+    pdf_path: str
+) -> None:
+    """
+    Resolve figure page_object_ref -> page_index using pikepdf page objects.
+    Adds figure["page_index"] when possible.
+    """
+    try:
+        with pikepdf.open(pdf_path) as pdf:
+            objgen_to_page_index = {}
+            for i, page in enumerate(pdf.pages):
+                try:
+                    objgen_to_page_index[page.objgen] = i
+                except Exception:
+                    pass
+
+            for fig in figures:
+                fig["page_index"] = None
+                ref = fig.get("page_object_ref")
+                if ref in objgen_to_page_index:
+                    fig["page_index"] = objgen_to_page_index[ref]
+    except Exception:
+        for fig in figures:
+            fig.setdefault("page_index", None)   
+
+def map_figures_to_images_by_page_and_mcid(
+    structure: Dict[str, Any],
+    image_occurrences: List[Dict[str, Any]]
+) -> None:
+    """
+    Stronger phase-3 mapping:
+    - groups by page
+    - only uses figures that have MCIDs
+    - maps page-local image occurrences to page-local figures
+    - stores mapped MCID for debugging
+
+    Still a controlled heuristic, but much better than document-global order.
+    """
+    figures = structure.get("figures", [])
+    if not figures or not image_occurrences:
+        return
+
+    figures_by_page: Dict[int, List[Dict[str, Any]]] = {}
+    images_by_page: Dict[int, List[Dict[str, Any]]] = {}
+
+    for fig in figures:
+        page_index = fig.get("page_index")
+        mcids = fig.get("mcids", [])
+        if page_index is None:
+            continue
+        if not mcids:
+            continue
+        figures_by_page.setdefault(page_index, []).append(fig)
+
+    for occ in image_occurrences:
+        page_index = occ.get("page_index")
+        if page_index is None:
+            continue
+        images_by_page.setdefault(page_index, []).append(occ)
+
+    for page_index, page_images in images_by_page.items():
+        page_figures = figures_by_page.get(page_index, [])
+        if not page_figures:
+            continue
+
+        # stable visual order: top-to-bottom then left-to-right
+        def occ_sort_key(occ):
+            b = occ.get("bbox", [0, 0, 0, 0])
+            return (round(b[1], 3), round(b[0], 3))
+
+        def fig_sort_key(fig):
+            # use first MCID as rough stable order
+            mcids = fig.get("mcids", [])
+            first_mcid = mcids[0] if mcids else 10**9
+            return first_mcid
+
+        page_images_sorted = sorted(page_images, key=occ_sort_key)
+        page_figures_sorted = sorted(page_figures, key=fig_sort_key)
+
+        if len(page_images_sorted) != len(page_figures_sorted):
+            continue
+
+        for occ, fig in zip(page_images_sorted, page_figures_sorted):
+            alt = fig.get("alt")
+            actual_text = fig.get("actual_text")
+            text_alt = alt if alt is not None else actual_text
+
+            occ["alt_text"] = text_alt
+            occ["alt_source"] = "structure_page_mcid_match"
+            occ["struct_figure_id"] = fig.get("id")
+            occ["mapped_mcid"] = fig.get("mcids", [None])[0]                 
+
+
+
 def extract_structure_pikepdf(pdf_path: str):
     """
     Extract:
@@ -566,7 +748,9 @@ def extract_structure_pikepdf(pdf_path: str):
                     "depth": depth,
                     "children": [],
                     "alt": None,
-                    "actual_text": None
+                    "actual_text": None,
+                    "mcids": [],
+                    "page_object_ref": None,
                 }
 
                 # /Alt and /ActualText sometimes exist for tagged figures/spans
@@ -582,29 +766,69 @@ def extract_structure_pikepdf(pdf_path: str):
                 except Exception:
                     pass
 
+                try:
+                    if isinstance(node, pikepdf.Dictionary) and "/Pg" in node:
+                        pg = node["/Pg"]
+                        if hasattr(pg, "objgen"):
+                            out_node["page_object_ref"] = pg.objgen
+                except Exception:
+                    pass
+
                 # Traverse children /K
                 try:
                     if isinstance(node, pikepdf.Dictionary) and "/K" in node:
                         child = node["/K"]
 
-                        # /K can be: int (MCID), dict, array, or mixed
-                        if isinstance(child, pikepdf.Array):
-                            for c in child:
-                                if isinstance(c, pikepdf.Dictionary):
-                                    out_node["children"].append(walk(c, depth + 1))
-                                else:
-                                    # MCID or other leaf
+                        def handle_k_item(item):
+                            # case 1: integer MCID
+                            if isinstance(item, int):
+                                out_node["mcids"].append(item)
+                                out_node["children"].append({
+                                    "type": "mcid",
+                                    "value": int(item)
+                                })
+                                return
+
+                            # case 2: marked-content reference dictionary
+                            if isinstance(item, pikepdf.Dictionary):
+                                # MCR object: has /MCID and maybe /Pg
+                                if "/MCID" in item:
+                                    try:
+                                        mcid_val = int(item["/MCID"])
+                                        out_node["mcids"].append(mcid_val)
+                                    except Exception:
+                                        mcid_val = None
+
+                                    pg_ref = None
+                                    try:
+                                        if "/Pg" in item and hasattr(item["/Pg"], "objgen"):
+                                            pg_ref = item["/Pg"].objgen
+                                    except Exception:
+                                        pg_ref = None
+
                                     out_node["children"].append({
-                                        "type": "leaf",
-                                        "value": _pike_to_py(c)
+                                        "type": "mcr",
+                                        "mcid": mcid_val,
+                                        "page_object_ref": pg_ref,
                                     })
-                        elif isinstance(child, pikepdf.Dictionary):
-                            out_node["children"].append(walk(child, depth + 1))
-                        else:
+                                    return
+
+                                # ordinary structure dictionary child
+                                out_node["children"].append(walk(item, depth + 1))
+                                return
+
+                            # fallback
                             out_node["children"].append({
                                 "type": "leaf",
-                                "value": _pike_to_py(child)
+                                "value": _pike_to_py(item)
                             })
+
+                        if isinstance(child, pikepdf.Array):
+                            for c in child:
+                                handle_k_item(c)
+                        else:
+                            handle_k_item(child)
+
                 except Exception:
                     result["validation"]["notes"].append(f"Failed walking children at depth {depth}")
 
@@ -623,6 +847,8 @@ def extract_structure_pikepdf(pdf_path: str):
     except Exception as e:
         result["validation"]["errors"].append(f"pikepdf failed: {type(e).__name__}: {e}")
         return result
+
+
 
 def ocr_image_bytes(img_bytes: bytes, lang: str = "eng"):
     """
@@ -1127,6 +1353,13 @@ def extract_document_json(pdf_path: str ,run_ocr: bool = True) -> Dict[str, Any]
 
     file_hash = sha256_file(pdf_path)
     structure = extract_structure_pikepdf(pdf_path)
+
+    structure["figures"] = extract_figure_nodes_from_structure(structure)
+    attach_page_index_to_figures(structure["figures"], pdf_path)
+    map_single_figure_alt_to_single_image(structure, all_image_occurrences)
+    map_figures_to_images_by_page_and_mcid(structure, all_image_occurrences)
+    map_figures_to_images_by_order(structure, all_image_occurrences)
+
     interactivity = extract_interactivity_pikepdf(pdf_path)
 
     out = {

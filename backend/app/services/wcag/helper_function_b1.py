@@ -2,7 +2,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import fitz
 import numpy as np
 import re
-from .wcag.issue import make_issue
+from .issue import make_issue
 import math
 import pikepdf
 import os
@@ -94,12 +94,6 @@ def bbox_intersects(b1: List[float], b2: List[float], margin: float = 0.0) -> bo
     return bbox_intersection(bb1, b2) is not None
 
 
-def min_non_none(values: List[Optional[float]]) -> Optional[float]:
-    vals = [v for v in values if v is not None]
-    if not vals:
-        return None
-    return min(vals)
-
 
 def pdfminer_bbox_to_pymupdf_bbox(bbox_pdfminer: List[float], page_height: float) -> List[float]:
     """
@@ -154,60 +148,6 @@ def colors_are_distinct(c1: list[int], c2: list[int], threshold: float = 80.0) -
         (b1 - b2) ** 2
     )
     return dist >= threshold
-
-
-def estimate_background_rgb_for_bbox(
-    page: fitz.Page,
-    bbox: List[float],
-    scale: float = 2.0,
-    grid: int = 8
-) -> Optional[List[int]]:
-    """
-    Render page to an image and sample pixels under bbox.
-    Returns median RGB from sampled pixels.
-    """
-    try:
-        mat = fitz.Matrix(scale, scale)
-        pix = page.get_pixmap(matrix=mat, alpha=False)
-        img = np.frombuffer(pix.samples, dtype=np.uint8).reshape(pix.height, pix.width, pix.n)
-        if pix.n < 3:
-            return None
-    except Exception:
-        return None
-
-    x0, y0, x1, y1 = bbox
-    px0 = int(max(0, min(pix.width - 1, round(x0 * scale))))
-    py0 = int(max(0, min(pix.height - 1, round(y0 * scale))))
-    px1 = int(max(0, min(pix.width - 1, round(x1 * scale))))
-    py1 = int(max(0, min(pix.height - 1, round(y1 * scale))))
-
-    if px1 <= px0 or py1 <= py0:
-        return None
-
-    pad = max(1, int(min(px1 - px0, py1 - py0) * 0.12))
-    sx0 = min(px1 - 1, px0 + pad)
-    sy0 = min(py1 - 1, py0 + pad)
-    sx1 = max(px0 + 1, px1 - pad)
-    sy1 = max(py0 + 1, py1 - pad)
-
-    if sx1 <= sx0 or sy1 <= sy0:
-        sx0, sy0, sx1, sy1 = px0, py0, px1, py1
-
-    xs = np.linspace(sx0, sx1 - 1, grid).astype(int)
-    ys = np.linspace(sy0, sy1 - 1, grid).astype(int)
-
-    samples = []
-    for yy in ys:
-        for xx in xs:
-            rgb = img[yy, xx, :3]
-            samples.append(rgb)
-
-    if not samples:
-        return None
-
-    samples = np.array(samples)
-    med = np.median(samples, axis=0)
-    return [int(med[0]), int(med[1]), int(med[2])]
 
 
 ##### text and layout helpers ########
@@ -820,12 +760,14 @@ def extract_media_occurrences(doc: fitz.Document, text_spans: List[Dict[str, Any
 
                             if CAPTION_POSITIVE_RE.search(st) and not CAPTION_NEGATIVE_RE.search(st):
                                 media["has_detectable_captions"] = True
+                                media["has_detectable_media_alternative"] = True
 
                             if AUDIO_DESC_POSITIVE_RE.search(st) and not AUDIO_DESC_NEGATIVE_RE.search(st):
                                 media["has_detectable_audio_description"] = True
+                                media["has_detectable_media_alternative"] = True
 
                             if MEDIA_ALT_POSITIVE_RE.search(st) and not MEDIA_ALT_NEGATIVE_RE.search(st):
-                                media["has_detectable_text_alternative"] = True
+                                media["has_detectable_media_alternative"] = True
 
                             if LIVE_RE.search(st):
                                 media["looks_live"] = True
@@ -883,7 +825,7 @@ def extract_media_annotations_pikepdf(pdf_path: str, pages: List[Dict[str, Any]]
                             "kind": "unknown",
                             "filename": None,
                             "mime_type": None,
-                            "has_detectable_text_alternative": False,
+                            "has_detectable_media_alternative": False,
                             "nearby_text_ids": [],
                             "notes": [],
                         }
@@ -1121,15 +1063,19 @@ def annotate_media_alternatives(
 
             if CAPTION_POSITIVE_RE.search(st) and not CAPTION_NEGATIVE_RE.search(st):
                 media["has_detectable_captions"] = True
+                media["has_detectable_media_alternative"] = True
 
             if AUDIO_DESC_POSITIVE_RE.search(st) and not AUDIO_DESC_NEGATIVE_RE.search(st):
                 media["has_detectable_audio_description"] = True
+                media["has_detectable_media_alternative"] = True
 
             if any(k in st for k in LIVE_KEYWORDS):
                 media["looks_live"] = True
 
         media["nearby_text_ids"] = nearby_ids
-        media["has_detectable_text_alternative"] = found_alt
+        media["has_detectable_media_alternative"] = (
+    media.get("has_detectable_media_alternative", False) or found_alt
+)
 ##### default templates ########
 
 def default_presentation_semantics() -> Dict[str, Any]:
@@ -1152,7 +1098,6 @@ def default_presentation_semantics() -> Dict[str, Any]:
         "ui_state": None
     }
 
-
 def default_resize_risk() -> Dict[str, Any]:
     return {
         "font_size_pt": 0.0,
@@ -1162,11 +1107,15 @@ def default_resize_risk() -> Dict[str, Any]:
         "estimated_scale_200_bbox": None,
         "has_nearby_text": False,
         "nearby_text_ids": [],
+        "same_line_overlap_ids": [],
+        "paragraph_flow_neighbor_ids": [],
         "has_nearby_graphic": False,
         "nearby_graphic_ids": [],
         "has_nearby_widget": False,
         "nearby_widget_ids": [],
+        "clipping_container_ids": [],
         "would_overlap_on_scale_200": False,
+        "suppressed_due_to_semantics": False,
         "risk_score": 0
     }
 
@@ -1537,6 +1486,19 @@ def detect_link_color_only(document: dict) -> list[dict]:
             ]
 
             if not linked_spans:
+                issues.append(
+                    make_issue(
+                        criterion="1.4.1",
+                        issue="link_color_only_needs_review",
+                        location={
+                            "page": page_index,
+                            "link_id": link_id,
+                        },
+                        severity="needs_review",
+                        recommendation="Linked text could not be determined automatically."
+                    )
+                )
+                reported_link_ids.add(link_id)
                 continue
 
             linked_spans = _sort_spans_reading_order(linked_spans)
@@ -1548,19 +1510,89 @@ def detect_link_color_only(document: dict) -> list[dict]:
             ).strip()
 
             if not combined_text:
+                issues.append(
+                    make_issue(
+                        criterion="1.4.1",
+                        issue="link_color_only_needs_review",
+                        location={
+                            "page": page_index,
+                            "link_id": link_id,
+                            "span_ids": [sp.get("id") for sp in linked_spans if sp.get("id")],
+                        },
+                        severity="needs_review",
+                        recommendation="Linked label text could not be interpreted automatically."
+                    )
+                )
+                reported_link_ids.add(link_id)
                 continue
 
             if is_url_like_text(combined_text):
+                issues.append(
+                    make_issue(
+                        criterion="1.4.1",
+                        issue="link_non_color_cue_detected",
+                        location={
+                            "page": page_index,
+                            "link_id": link_id,
+                            "span_ids": [sp.get("id") for sp in linked_spans if sp.get("id")],
+                        },
+                        severity="pass",
+                        recommendation="Link text itself provides a visible cue."
+                    )
+                )
+                reported_link_ids.add(link_id)
                 continue
 
             combined_bbox = _union_bboxes([sp["bbox"] for sp in linked_spans if sp.get("bbox")])
             if not combined_bbox:
+                issues.append(
+                    make_issue(
+                        criterion="1.4.1",
+                        issue="link_color_only_needs_review",
+                        location={
+                            "page": page_index,
+                            "link_id": link_id,
+                            "span_ids": [sp.get("id") for sp in linked_spans if sp.get("id")],
+                        },
+                        severity="needs_review",
+                        recommendation="Link region could not be computed automatically."
+                    )
+                )
+                reported_link_ids.add(link_id)
                 continue
 
             if has_underline_graphic(combined_bbox, page_graphics):
+                issues.append(
+                    make_issue(
+                        criterion="1.4.1",
+                        issue="link_non_color_cue_detected",
+                        location={
+                            "page": page_index,
+                            "link_id": link_id,
+                            "span_ids": [sp.get("id") for sp in linked_spans if sp.get("id")],
+                        },
+                        severity="pass",
+                        recommendation="A non-color cue was detected."
+                    )
+                )
+                reported_link_ids.add(link_id)
                 continue
 
             if has_enclosing_box_cue(combined_bbox, page_graphics):
+                issues.append(
+                    make_issue(
+                        criterion="1.4.1",
+                        issue="link_non_color_cue_detected",
+                        location={
+                            "page": page_index,
+                            "link_id": link_id,
+                            "span_ids": [sp.get("id") for sp in linked_spans if sp.get("id")],
+                        },
+                        severity="pass",
+                        recommendation="A non-color cue was detected."
+                    )
+                )
+                reported_link_ids.add(link_id)
                 continue
 
             rep_span = linked_spans[0]
@@ -1568,6 +1600,20 @@ def detect_link_color_only(document: dict) -> list[dict]:
             rep_color = rep_span.get("color", {}).get("fill_rgb")
 
             if not rep_color:
+                issues.append(
+                    make_issue(
+                        criterion="1.4.1",
+                        issue="link_color_only_needs_review",
+                        location={
+                            "page": page_index,
+                            "link_id": link_id,
+                            "span_ids": [sp.get("id") for sp in linked_spans if sp.get("id")],
+                        },
+                        severity="needs_review",
+                        recommendation="Link color could not be determined automatically."
+                    )
+                )
+                reported_link_ids.add(link_id)
                 continue
 
             neighbor_map: dict[str, dict] = {}
@@ -1585,6 +1631,20 @@ def detect_link_color_only(document: dict) -> list[dict]:
                         neighbor_map[nid] = n
 
             if not neighbor_map:
+                issues.append(
+                    make_issue(
+                        criterion="1.4.1",
+                        issue="link_color_only_needs_review",
+                        location={
+                            "page": page_index,
+                            "link_id": link_id,
+                            "span_ids": [sp.get("id") for sp in linked_spans if sp.get("id")],
+                        },
+                        severity="needs_review",
+                        recommendation="Comparable surrounding text was not found automatically."
+                    )
+                )
+                reported_link_ids.add(link_id)
                 continue
 
             typography_neighbors = []
@@ -1600,6 +1660,20 @@ def detect_link_color_only(document: dict) -> list[dict]:
                     typography_neighbors.append(n)
 
             if not typography_neighbors:
+                issues.append(
+                    make_issue(
+                        criterion="1.4.1",
+                        issue="link_color_only_passed",
+                        location={
+                            "page": page_index,
+                            "link_id": link_id,
+                            "span_ids": [sp.get("id") for sp in linked_spans if sp.get("id")],
+                        },
+                        severity="pass",
+                        recommendation="No color-only failure was detected."
+                    )
+                )
+                reported_link_ids.add(link_id)
                 continue
 
             distinct_neighbors = []
@@ -1609,6 +1683,20 @@ def detect_link_color_only(document: dict) -> list[dict]:
                     distinct_neighbors.append(n)
 
             if not distinct_neighbors:
+                issues.append(
+                    make_issue(
+                        criterion="1.4.1",
+                        issue="link_color_only_passed",
+                        location={
+                            "page": page_index,
+                            "link_id": link_id,
+                            "span_ids": [sp.get("id") for sp in linked_spans if sp.get("id")],
+                        },
+                        severity="pass",
+                        recommendation="No color-only failure was detected."
+                    )
+                )
+                reported_link_ids.add(link_id)
                 continue
 
             issues.append(
@@ -1621,10 +1709,7 @@ def detect_link_color_only(document: dict) -> list[dict]:
                         "span_ids": [sp.get("id") for sp in linked_spans if sp.get("id")],
                     },
                     severity="high",
-                    recommendation=(
-                        "This link appears to be distinguished from surrounding text mainly by color. "
-                        "Add a non-color visual cue such as underlining."
-                    ),
+                    recommendation="Add a non-color cue such as underlining.",
                 )
             )
             reported_link_ids.add(link_id)
@@ -1640,6 +1725,7 @@ def detect_explicit_color_only_instructions(document: dict) -> list[dict]:
     text_spans = doc.get("text_spans", [])
 
     reported_keys = set()
+    found_any = False
 
     for block in text_blocks:
         block_id = block.get("id")
@@ -1664,13 +1750,11 @@ def detect_explicit_color_only_instructions(document: dict) -> list[dict]:
                             "block_id": block_id,
                         },
                         severity="high",
-                        recommendation=(
-                            "This text appears to instruct users to rely on color alone. "
-                            "Add a non-color cue such as symbols, labels, icons, or patterns."
-                        ),
+                        recommendation="Do not rely on color alone; add another cue.",
                     )
                 )
                 reported_keys.add(key)
+                found_any = True
                 break
 
     for span in text_spans:
@@ -1696,14 +1780,23 @@ def detect_explicit_color_only_instructions(document: dict) -> list[dict]:
                             "span_id": span_id,
                         },
                         severity="high",
-                        recommendation=(
-                            "This text appears to instruct users to rely on color alone. "
-                            "Add a non-color cue such as symbols, labels, icons, or patterns."
-                        ),
+                        recommendation="Do not rely on color alone; add another cue.",
                     )
                 )
                 reported_keys.add(key)
+                found_any = True
                 break
+
+    if not found_any:
+        issues.append(
+            make_issue(
+                criterion="1.4.1",
+                issue="explicit_color_only_instruction_not_detected",
+                location={},
+                severity="pass",
+                recommendation="No explicit color-only instruction was detected."
+            )
+        )
 
     return issues
 
@@ -1729,6 +1822,7 @@ def detect_required_field_color_only(document: dict) -> list[dict]:
             widgets_by_page.setdefault(p, []).append(w)
 
     reported_span_ids = set()
+    found_any = False
 
     for page_index, page_widgets in widgets_by_page.items():
         page_spans = spans_by_page.get(page_index, [])
@@ -1798,13 +1892,22 @@ def detect_required_field_color_only(document: dict) -> list[dict]:
                             "widget_id": widget.get("id"),
                         },
                         severity="high",
-                        recommendation=(
-                            "This field label appears to indicate required status mainly by color. "
-                            "Add a non-color cue such as an asterisk (*) or the word 'required'."
-                        ),
+                        recommendation="Add a cue such as '*' or 'required'.",
                     )
                 )
                 reported_span_ids.add(span_id)
+                found_any = True
+
+    if not found_any:
+        issues.append(
+            make_issue(
+                criterion="1.4.1",
+                issue="required_field_color_only_not_detected",
+                location={},
+                severity="pass",
+                recommendation="No action needed since no required field marked only by color was detected."
+            )
+        )
 
     return issues
 
@@ -1841,6 +1944,7 @@ def detect_repeated_identical_marker_or_label_color_only(document: dict) -> list
             graphics_by_page.setdefault(p, []).append(g)
 
     reported_group_keys = set()
+    found_any = False
 
     for page_index, page_spans in spans_by_page.items():
         page_links = links_by_page.get(page_index, [])
@@ -1959,21 +2063,29 @@ def detect_repeated_identical_marker_or_label_color_only(document: dict) -> list
                         "span_ids": [sp.get("id") for sp in patterned if sp.get("id")],
                     },
                     severity="medium",
-                    recommendation=(
-                        "These repeated identical markers or labels appear to be distinguished mainly by color. "
-                        "Add a non-color cue such as text, patterns, shapes, or symbols so color is not the only differentiator."
-                    ),
+                    recommendation="Add a non-color cue to distinguish these items.",
                 )
             )
             reported_group_keys.add(report_key)
+            found_any = True
+
+    if not found_any:
+        issues.append(
+            make_issue(
+                criterion="1.4.1",
+                issue="repeated_identical_marker_or_label_color_only_not_detected",
+                location={},
+                severity="pass",
+                recommendation="No repeated identical items distinguished only by color were detected."
+            )
+        )
 
     return issues
+
 
 #######             wcag 2.5 helpers             #######
 
 def normalize_label(text: Optional[str]) -> str:
-    if not text:
-        return ""
     if not text:
         return ""
     text = text.strip().lower()
@@ -2013,11 +2125,7 @@ def matching_widget_for_acrofield(
     return None
 
 
-def collect_label(
-    widget: Dict[str, Any],
-    page_spans: List[Dict[str, Any]],
-    max_h_gap: float = 140.0,
-    max_v_gap: float = 35.0,
+def collect_label(widget: Dict[str, Any], page_spans: List[Dict[str, Any]], max_h_gap: float = 140.0, max_v_gap: float = 35.0,
 ) -> List[Dict[str, Any]]:
     widget_bbox = widget.get("bbox")
     if not widget_bbox:
@@ -2040,7 +2148,6 @@ def collect_label(
             _, _, sx1, sy1 = sb
             scx, scy = center_of_bbox(sb)
 
-            # prefer text above or left of the widget
             is_left = sx1 <= wx1
             is_above = sy1 <= wy1
 
@@ -2054,19 +2161,38 @@ def collect_label(
             ))
 
     candidates.sort(key=lambda x: x[:5])
-    return [c[-1] for c in candidates]
+    return [c[-1] for c in candidates[:5]]
 
 
 def combine_nearby_spans(
     spans: List[Dict[str, Any]],
-    limit: int = 3
+    limit: int = 3,
+    y_tol: float = 8.0
 ) -> str:
-    parts = []
+    if not spans:
+        return ""
+
+    first = spans[0]
+    first_bbox = first.get("bbox")
+    if not first_bbox:
+        return ""
+
+    _, first_cy = center_of_bbox(first_bbox)
+
+    same_line_parts = []
     for sp in spans[:limit]:
+        sb = sp.get("bbox")
         txt = (sp.get("text") or "").strip()
-        if txt:
-            parts.append(txt)
-    return " ".join(parts).strip()
+        if not sb or not txt:
+            continue
+
+        _, cy = center_of_bbox(sb)
+        if abs(cy - first_cy) <= y_tol:
+            same_line_parts.append((sb[0], txt))
+
+    same_line_parts.sort(key=lambda x: x[0])
+    return " ".join(txt for _, txt in same_line_parts).strip()
+
 
 
 ############## 1.4 wcag ################
@@ -2147,34 +2273,6 @@ def sample_outside_ring_rgb(
 
     pixels = np.vstack(samples)
     return median_rgb_from_pixels(pixels)
-def sample_inside_bbox_rgb(
-    page: fitz.Page,
-    bbox: List[float],
-    scale: float = 2.0,
-    pad_ratio: float = 0.12
-) -> Optional[List[int]]:
-    img, scale = render_page_to_array(page, scale=scale)
-    if img is None:
-        return None
-
-    px0, py0, px1, py1 = bbox_to_pixel_rect(bbox, img.shape, scale)
-    if px1 <= px0 or py1 <= py0:
-        return None
-
-    pad = max(1, int(min(px1 - px0, py1 - py0) * pad_ratio))
-    sx0 = min(px1 - 1, px0 + pad)
-    sy0 = min(py1 - 1, py0 + pad)
-    sx1 = max(px0 + 1, px1 - pad)
-    sy1 = max(py0 + 1, py1 - pad)
-
-    if sx1 <= sx0 or sy1 <= sy0:
-        sx0, sy0, sx1, sy1 = px0, py0, px1, py1
-
-    region = img[sy0:sy1, sx0:sx1]
-    if region.size == 0:
-        return None
-
-    return median_rgb_from_pixels(region.reshape(-1, img.shape[2]))
 
 def annotate_graphics_non_text_contrast(
     doc: fitz.Document,
@@ -2310,37 +2408,7 @@ def annotate_widgets_non_text_contrast(
                 "border_rgb": border_rgb,
                 "passes_3_1": contrast_against_border >= 3.0 if contrast_against_border is not None else None
             }          
-
-def is_likely_decorative_graphic(graphic: Dict[str, Any], page_width: float, page_height: float) -> bool:
-    bbox = graphic.get("bbox")
-    if not bbox:
-        return True
-
-    w = bbox_width(bbox)
-    h = bbox_height(bbox)
-    area = w * h
-    page_area = page_width * page_height if page_width > 0 and page_height > 0 else 0
-
-    opacity = graphic.get("opacity")
-    stroke_width = graphic.get("stroke_width") or 0.0
-
-    # very large filled background-like regions
-    if page_area > 0 and area / page_area > 0.6:
-        return True
-
-    # very thin separator lines
-    if (h <= 2 and w >= page_width * 0.5) or (w <= 2 and h >= page_height * 0.5):
-        return True
-
-    # nearly invisible
-    if opacity is not None and opacity < 0.15:
-        return True
-
-    # no visible style
-    if not graphic.get("stroke_rgb") and not graphic.get("fill_rgb"):
-        return True
-
-    return False            
+         
 def graphic_overlaps_widget(graphic: Dict[str, Any], widgets: List[Dict[str, Any]], margin: float = 2.0) -> bool:
     gb = graphic.get("bbox")
     if not gb:
@@ -2370,8 +2438,6 @@ def is_likely_layout_or_decorative_graphic(
     page_area = page_width * page_height if page_width > 0 and page_height > 0 else 0
 
     fill_rgb = graphic.get("fill_rgb")
-    stroke_rgb = graphic.get("stroke_rgb")
-    stroke_width = graphic.get("stroke_width") or 0.0
     gtype = graphic.get("type")
 
     # 1) huge/light panel backgrounds
@@ -2397,9 +2463,6 @@ def is_likely_layout_or_decorative_graphic(
     return False
 
 #########        wcag   1.4.4 helpers        ##########
-from typing import Any, Dict, List, Optional
-
-
 def estimate_resized_text_bbox_200(span_bbox: List[float]) -> List[float]:
     x0, y0, x1, y1 = span_bbox
     w = max(0.0, x1 - x0)
@@ -2418,19 +2481,6 @@ def estimate_resized_text_bbox_200(span_bbox: List[float]) -> List[float]:
 def bbox_exceeds_container(candidate_bbox: List[float], container: List[float], margin: float = 1.0) -> bool:
     return not bbox_contains(container, candidate_bbox, margin=margin)
 
-
-def is_same_line(span1: Dict[str, Any], span2: Dict[str, Any], y_tol: float = 8.0) -> bool:
-    if span1.get("page_index") != span2.get("page_index"):
-        return False
-
-    b1 = span1.get("bbox")
-    b2 = span2.get("bbox")
-    if not b1 or not b2:
-        return False
-
-    c1y = (b1[1] + b1[3]) / 2.0
-    c2y = (b2[1] + b2[3]) / 2.0
-    return abs(c1y - c2y) <= y_tol
 
 
 def looks_like_paragraph_continuation(span1: Dict[str, Any], span2: Dict[str, Any]) -> bool:
@@ -2666,13 +2716,8 @@ def annotate_resize_risk(
         )
         risk_score += min(2, non_paragraph_text_collisions)
 
-        suppressed = False
-        if sem.get("is_text_in_image_context", False):
-            risk_score = max(0, risk_score - 3)
-            suppressed = True
-        if sem.get("is_logo_text", False) or sem.get("is_decorative_text", False):
-            risk_score = max(0, risk_score - 2)
-            suppressed = True
+        if sem.get("is_text_in_image_context", False) or sem.get("is_logo_text", False) or sem.get("is_decorative_text", False) :
+            continue
 
         sp["resize_risk"] = {
             "font_size_pt": font_size,
@@ -2692,7 +2737,77 @@ def annotate_resize_risk(
             "would_overlap_on_scale_200": bool(
                 nearby_text_ids or nearby_graphic_ids or nearby_widget_ids or clipping_container_ids
             ),
-            "suppressed_due_to_semantics": suppressed,
             "risk_score": risk_score,
         }
-        
+
+
+#############   wcag 1.1.1 helpers ################
+
+def _is_descriptive_control_name(name: str | None) -> bool:
+    if not isinstance(name, str):
+        return False
+
+    n = name.strip().lower()
+    if not n:
+        return False
+
+    # obvious generic/internal patterns
+    generic_patterns = [
+        r"^fld\d*$",
+        r"^field\d*$",
+        r"^text\d*$",
+        r"^input\d*$",
+        r"^textbox\d*$",
+        r"^txt\d*$",
+        r"^box\d*$",
+        r"^form\d*$",
+        r"^widget\d*$",
+        r"^control\d*$",
+        r"^button\d*$",
+        r"^\d+$",
+    ]
+
+    for pattern in generic_patterns:
+        if re.match(pattern, n):
+            return False
+
+    # too short to be meaningful
+    if len(n) < 3:
+        return False
+
+    return True
+
+
+BAD_ALT_WORDS = {
+    "image", "picture", "photo", "graphic", "figure",
+    "icon", "logo", "video", "audio", "media"
+}
+
+def _is_suspicious_alt_text(alt: Optional[str]) -> bool:
+    if alt is None:
+        return False
+
+    if alt == "":
+        return False
+
+    alt_clean = alt.strip().lower()
+
+    # remove surrounding quotes repeatedly
+    alt_unquoted = alt_clean.strip('"').strip("'").strip()
+
+    if alt_unquoted in {"", '""', "''", "/n", "\\n", "n"}:
+        return True
+
+    if alt_unquoted in BAD_ALT_WORDS:
+        return True
+
+    if re.match(r".*\.(jpg|jpeg|png|gif|bmp|svg)$", alt_unquoted):
+        return True
+
+    if re.match(r"(img|image|scan|photo)[\-_]?\d+", alt_unquoted):
+        return True
+
+    if len(alt_unquoted) <= 2:
+        return True
+
+    return False
