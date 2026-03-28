@@ -1,9 +1,11 @@
 from fastapi import APIRouter, UploadFile, File, HTTPException
+from fastapi.responses import StreamingResponse
 from uuid import uuid4
 import os
 import sys
 import subprocess
 import json
+import io
 
 # Ensure backend/ is on the path so app.services.wcag resolves correctly
 _BACKEND_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
@@ -132,6 +134,16 @@ async def upload_pdf(file: UploadFile = File(...)):
             status_code=500,
             detail=f"Report building failed: {e}"
         )
+    # ── Step 4b: Save report JSON to disk ─────────────────────────────────────
+    report_json_path = os.path.join(UPLOAD_DIR, f"{upload_id}_report.json")
+    try:
+        with open(report_json_path, "w", encoding="utf-8") as f:
+            json.dump(report, f)
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to save report: {e}"
+        )
 
     # ── Step 5: Return response ───────────────────────────────────────────────
     return {
@@ -141,3 +153,42 @@ async def upload_pdf(file: UploadFile = File(...)):
         "status":            "analysed",
         "report":            report,
     }
+
+@router.get("/uploads/{upload_id}/report")
+async def download_report(upload_id: str):
+    # ── Step 1: Load the saved report JSON ────────────────────────────────────
+    report_json_path = os.path.join(UPLOAD_DIR, f"{upload_id}_report.json")
+
+    if not os.path.exists(report_json_path):
+        raise HTTPException(
+            status_code=404,
+            detail="Report not found. The upload ID may be invalid or the file has expired."
+        )
+
+    try:
+        with open(report_json_path, "r", encoding="utf-8") as f:
+            report_json = json.load(f)
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to read report: {e}"
+        )
+
+    # ── Step 2: Generate the PDF ──────────────────────────────────────────────
+    try:
+        from app.services.wcag.report_builder import build_report_pdf
+        pdf_bytes = build_report_pdf(report_json)
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to generate PDF report: {e}"
+        )
+
+    # ── Step 3: Return as a downloadable PDF file ─────────────────────────────
+    return StreamingResponse(
+        io.BytesIO(pdf_bytes),
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": f"attachment; filename=report_{upload_id}.pdf"
+        }
+    )
