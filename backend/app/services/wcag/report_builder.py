@@ -6,3 +6,6 @@ def build_report(document_meta: dict, issues: list[dict]) -> dict:
         "score": compute_score(issues),
         "issues": issues
     }
+
+def build_report_pdf(report_json: dict) -> bytes:
+    raise NotImplementedError("build_report_pdf() is not yet implemented.")
