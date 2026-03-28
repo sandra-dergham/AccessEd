@@ -2,7 +2,7 @@ import json
 import hashlib
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
-
+from langdetect import detect, LangDetectException
 from pdfminer.high_level import extract_pages
 from pdfminer.layout import LTTextBoxHorizontal, LTTextLineHorizontal, LTChar, LTAnno
 
@@ -16,14 +16,15 @@ pytesseract.pytesseract.tesseract_cmd = r"C:\Program Files\Tesseract-OCR\tessera
 
 import numpy as np
 
-from wcag.helper_function_b1  import ( pdfminer_bbox_to_pymupdf_bbox,default_presentation_semantics,extract_widgets,annotate_text_in_image_context,annotate_logo_like_text,annotate_decorative_text,
-    default_resize_risk,
-    annotate_resize_risk,center_of_bbox,annotate_ui_labels,
-    annotate_graphics_non_text_contrast,
-    annotate_widgets_non_text_contrast,
-    extract_media_occurrences
-    ,annotate_media_alternatives,contrast_ratio
-    ,extract_embedded_files_pikepdf,extract_media_annotations_pikepdf)
+from wcag.helper_function_b1 import (
+    pdfminer_bbox_to_pymupdf_bbox, default_presentation_semantics, extract_widgets,
+    annotate_text_in_image_context, annotate_logo_like_text, annotate_decorative_text,
+    default_resize_risk, annotate_resize_risk, center_of_bbox, annotate_ui_labels,
+    annotate_graphics_non_text_contrast, annotate_widgets_non_text_contrast,
+    extract_media_occurrences, annotate_media_alternatives, contrast_ratio,
+    extract_embedded_files_pikepdf, extract_media_annotations_pikepdf
+)
+
 
 # -----------------------------
 # Helpers
@@ -59,32 +60,154 @@ def float_rgb_to_int(rgb):
     return None
 
 
+def center_of_bbox(b: List[float]) -> Tuple[float, float]:
+    x0, y0, x1, y1 = b
+    return ((x0 + x1) / 2.0, (y0 + y1) / 2.0)
+
+
 def point_in_bbox(px: float, py: float, b: List[float], margin: float = 2.0) -> bool:
     x0, y0, x1, y1 = b
     return (x0 - margin) <= px <= (x1 + margin) and (y0 - margin) <= py <= (y1 + margin)
 
 
+def pdfminer_bbox_to_pymupdf_bbox(bbox_pdfminer: List[float], page_height: float) -> List[float]:
+    """
+    pdfminer bbox: [x0, y0, x1, y1] with origin bottom-left.
+    Convert to PyMuPDF-like: y grows downward (top-left style).
+    """
+    x0, y0, x1, y1 = bbox_pdfminer
+    new_y0 = page_height - y1
+    new_y1 = page_height - y0
+    return [float(x0), float(new_y0), float(x1), float(new_y1)]
+
+
+def srgb_channel_to_linear(c: float) -> float:
+    c = c / 255.0
+    if c <= 0.04045:
+        return c / 12.92
+    return ((c + 0.055) / 1.055) ** 2.4
+
+
+def relative_luminance(rgb: List[int]) -> float:
+    r, g, b = rgb
+    R = srgb_channel_to_linear(r)
+    G = srgb_channel_to_linear(g)
+    B = srgb_channel_to_linear(b)
+    return 0.2126 * R + 0.7152 * G + 0.0722 * B
+
+
+def detect_language_safe(text: str) -> Optional[str]:
+    """
+    Detect language of a text snippet.
+    Returns ISO language code or None if detection fails.
+    """
+    try:
+        if not text or len(text.strip()) < 5:
+            return None
+        return detect(text)
+    except LangDetectException:
+        return None
+
+
+def infer_document_language(text_spans: List[Dict[str, Any]]) -> Optional[str]:
+    """
+    Infer the dominant document language from detected span languages.
+    Returns a language code only if one language clearly dominates.
+    """
+    from collections import Counter
+
+    langs = []
+    for span in text_spans:
+        lang = span.get("detected_language")
+        text = (span.get("text") or "").strip()
+
+        if not lang or not text:
+            continue
+        if len(text) < 20:
+            continue
+        if not any(ch.isalpha() for ch in text):
+            continue
+
+        langs.append(str(lang).lower().split("-")[0])
+
+    if not langs:
+        return None
+
+    counts = Counter(langs)
+    top_lang, top_count = counts.most_common(1)[0]
+
+    if top_count / len(langs) >= 0.8:
+        return top_lang
+
+    return None
+
+
+def detect_heading_candidates(text_spans: List[Dict[str, Any]]) -> List[str]:
+    """
+    Return IDs of spans that look like headings based on visual heuristics.
+    """
+    font_sizes = []
+    for span in text_spans:
+        size = span.get("font", {}).get("size")
+        if isinstance(size, (int, float)) and size > 0:
+            font_sizes.append(size)
+
+    avg_font_size = sum(font_sizes) / len(font_sizes) if font_sizes else 0
+    candidates = []
+
+    for span in text_spans:
+        text = (span.get("text") or "").strip()
+        font = span.get("font", {})
+        size = font.get("size", 0)
+        font_name = str(font.get("name", "")).lower()
+
+        if not text:
+            continue
+        if len(text) > 60:
+            continue
+        if not any(ch.isalpha() for ch in text):
+            continue
+
+        stripped_alnum = "".join(ch for ch in text if ch.isalnum())
+        if stripped_alnum.isdigit():
+            continue
+
+        is_large   = size >= max(16, avg_font_size * 1.2)
+        is_boldish = any(word in font_name for word in ["bold", "black", "semibold", "demi"])
+
+        if is_large or (is_boldish and size >= avg_font_size):
+            candidates.append(span["id"])
+
+    return candidates
+
+
 def is_bold_font(font: Dict[str, Any]) -> bool:
-    name = (font.get("name") or "").lower()
+    name  = (font.get("name") or "").lower()
     flags = font.get("flags")
     if "bold" in name:
         return True
     if isinstance(flags, int) and (flags & 16):
         return True
-
     return False
 
+
 def is_large_text(font: Dict[str, Any]) -> bool:
+    """
+    Returns True if the font qualifies as 'large text' per WCAG:
+    18pt normal weight, or 14pt bold.
+    Accepts a font dict with 'size' and optionally 'flags'/'name'.
+    """
     size = float(font.get("size", 0.0))
     bold = is_bold_font(font)
     return size >= 18.0 or (bold and size >= 14.0)
 
-def estimate_background_rgb_for_bbox(page: fitz.Page, bbox: List[float], scale: float = 2.0, grid: int = 8) -> Optional[List[int]]:
+
+def estimate_background_rgb_for_bbox(
+    page: fitz.Page, bbox: List[float], scale: float = 2.0, grid: int = 8
+) -> Optional[List[int]]:
     """
     Render page to an image and sample pixels under bbox.
     Returns median RGB from sampled pixels.
-    - scale: render scaling (2.0 = sharper)
-    - grid: grid x grid samples inside bbox
     """
     try:
         mat = fitz.Matrix(scale, scale)
@@ -95,17 +218,15 @@ def estimate_background_rgb_for_bbox(page: fitz.Page, bbox: List[float], scale: 
     except Exception:
         return None
 
-    # Scale bbox to pixel coords
     x0, y0, x1, y1 = bbox
-    px0 = int(max(0, min(pix.width - 1, round(x0 * scale))))
+    px0 = int(max(0, min(pix.width  - 1, round(x0 * scale))))
     py0 = int(max(0, min(pix.height - 1, round(y0 * scale))))
-    px1 = int(max(0, min(pix.width - 1, round(x1 * scale))))
+    px1 = int(max(0, min(pix.width  - 1, round(x1 * scale))))
     py1 = int(max(0, min(pix.height - 1, round(y1 * scale))))
 
     if px1 <= px0 or py1 <= py0:
         return None
 
-    # shrink a bit to avoid sampling glyph pixels too much
     pad = max(1, int(min(px1 - px0, py1 - py0) * 0.12))
     sx0 = min(px1 - 1, px0 + pad)
     sy0 = min(py1 - 1, py0 + pad)
@@ -132,13 +253,12 @@ def estimate_background_rgb_for_bbox(page: fitz.Page, bbox: List[float], scale: 
     return [int(med[0]), int(med[1]), int(med[2])]
 
 
-def compute_contrast_for_spans(doc: fitz.Document, text_spans: List[Dict[str, Any]], scale: float = 2.0):
+def compute_contrast_for_spans(
+    doc: fitz.Document, text_spans: List[Dict[str, Any]], scale: float = 2.0
+):
     """
-    Adds:
-      span["background_estimate"]
-      span["contrast"]
+    Adds span["background_estimate"] and span["contrast"] to each span.
     """
-    # group spans by page
     spans_by_page: Dict[int, List[Dict[str, Any]]] = {}
     for s in text_spans:
         spans_by_page.setdefault(s["page_index"], []).append(s)
@@ -151,47 +271,86 @@ def compute_contrast_for_spans(doc: fitz.Document, text_spans: List[Dict[str, An
             if not bbox:
                 continue
 
-            fg = sp.get("color", {}).get("fill_rgb", [0, 0, 0])
+            fg   = sp.get("color", {}).get("fill_rgb", [0, 0, 0])
             font = sp.get("font", {})
-            large = is_large_text(font)
+            large = is_large_text(font)   # ← fixed: was is_large_text(font_size)
 
             bg = estimate_background_rgb_for_bbox(page, bbox, scale=scale, grid=8)
             if bg is None:
-                # fallback: assume white background
-                bg = [255, 255, 255]
+                bg     = [255, 255, 255]
                 method = "fallback_white"
             else:
                 method = "sampled_median"
 
             if not isinstance(fg, list) or len(fg) < 3:
-                continue    
+                continue
 
             ratio = contrast_ratio(fg, bg)
 
-            
-
             sp["background_estimate"] = {
-                "bg_rgb": bg,
-                "method": method,
+                "bg_rgb":  bg,
+                "method":  method,
                 "samples": 64
             }
             sp["contrast"] = {
-                "ratio": float(round(ratio, 3)),
-                "passes_4_5_1": ratio >= 4.5,
-                "passes_3_1_large": ratio >= 3.0 if large else None,
+                "ratio":              float(round(ratio, 3)),
+                "passes_4_5_1":       ratio >= 4.5,
+                "passes_3_1_large":   ratio >= 3.0 if large else None,
                 "large_text_assumed": large
             }
+
 
 # -----------------------------
 # Phase 1: PyMuPDF extractors
 # -----------------------------
 
+def extract_form_fields(page: fitz.Page, page_index: int):
+    """
+    Extract AcroForm fields via PyMuPDF widgets.
+    Kept for batch2 compatibility.
+    """
+    fields = []
+    field_counter = 0
+
+    try:
+        widgets = page.widgets()
+    except Exception:
+        widgets = []
+
+    if not widgets:
+        return fields
+
+    for widget in widgets:
+        try:
+            rect = widget.rect
+        except Exception:
+            rect = None
+
+        field_id = f"field_p{page_index}_{field_counter}"
+        field_counter += 1
+
+        fields.append({
+            "id":         field_id,
+            "page_index": page_index,
+            "name":       getattr(widget, "field_name",  None),
+            "field_type": str(getattr(widget, "field_type", None)),
+            "label":      None,
+            "value":      getattr(widget, "field_value", None),
+            "bbox": [
+                float(rect.x0), float(rect.y0),
+                float(rect.x1), float(rect.y1)
+            ] if rect else None
+        })
+
+    return fields
+
+
 def extract_images(page: fitz.Page, doc: fitz.Document, page_index: int):
-    image_assets = {}
+    image_assets    = {}
     image_occurrences = []
     asset_bytes_map = {}
 
-    images = page.get_images(full=True)
+    images      = page.get_images(full=True)
     occ_counter = 0
 
     for img in images:
@@ -199,7 +358,7 @@ def extract_images(page: fitz.Page, doc: fitz.Document, page_index: int):
 
         try:
             base_image = doc.extract_image(xref)
-            img_bytes = base_image.get("image", b"")
+            img_bytes  = base_image.get("image", b"")
         except Exception:
             continue
 
@@ -212,10 +371,10 @@ def extract_images(page: fitz.Page, doc: fitz.Document, page_index: int):
         if asset_id not in image_assets:
             image_assets[asset_id] = {
                 "asset_id": asset_id,
-                "width": base_image.get("width"),
-                "height": base_image.get("height"),
-                "format": base_image.get("ext"),
-                "hash": img_hash
+                "width":    base_image.get("width"),
+                "height":   base_image.get("height"),
+                "format":   base_image.get("ext"),
+                "hash":     img_hash
             }
             asset_bytes_map[asset_id] = img_bytes
 
@@ -225,22 +384,26 @@ def extract_images(page: fitz.Page, doc: fitz.Document, page_index: int):
             occ_counter += 1
 
             image_occurrences.append({
-                "id": occ_id,
-                "asset_id": asset_id,
-                "page_index": page_index,
-                "bbox": [float(r.x0), float(r.y0), float(r.x1), float(r.y1)],
-                "alt_text": None,
-                "alt_source": None,
+                "id":               occ_id,
+                "asset_id":         asset_id,
+                "page_index":       page_index,
+                "bbox":             [float(r.x0), float(r.y0), float(r.x1), float(r.y1)],
+                "alt_text":         None,
+                "alt_source":       None,
                 "struct_figure_id": None,
-                "ocr_text": None,
-                "ocr_confidence": None
-})
+                "ocr_text":         None,
+                "ocr_confidence":   None
+            })
 
-    return image_assets, image_occurrences,asset_bytes_map
+    return image_assets, image_occurrences, asset_bytes_map
 
 
 def extract_links(page: fitz.Page, page_index: int):
-    links = []
+    """
+    Extract links in a rule-friendly format.
+    Keeps 'kind' for backward compatibility and also adds 'type' + 'uri'.
+    """
+    links        = []
     link_counter = 0
 
     for l in page.get_links():
@@ -251,29 +414,36 @@ def extract_links(page: fitz.Page, page_index: int):
         link_id = f"link_p{page_index}_{link_counter}"
         link_counter += 1
 
-        if "uri" in l:
-            kind = "uri"
-            target = l.get("uri")
-        elif "page" in l:
-            kind = "internal"
-            target = f"page_{l.get('page')}"
-        else:
-            kind = "unknown"
-            target = None
+        link_type = "unknown"
+        target    = None
+        uri       = None
+
+        if "uri" in l and l.get("uri"):
+            link_type = "uri"
+            uri       = l.get("uri")
+            target    = uri
+        elif "page" in l and l.get("page") is not None:
+            link_type = "internal"
+            target    = f"page_{l.get('page')}"
+        elif "to" in l and l.get("to") is not None:
+            link_type = "internal"
+            target    = str(l.get("to"))
 
         links.append({
-            "id": link_id,
+            "id":         link_id,
             "page_index": page_index,
-            "bbox": [float(rect.x0), float(rect.y0), float(rect.x1), float(rect.y1)],
-            "kind": kind,
-            "target": target
+            "bbox":       [float(rect.x0), float(rect.y0), float(rect.x1), float(rect.y1)],
+            "kind":       link_type,
+            "type":       link_type,
+            "target":     target,
+            "uri":        uri
         })
 
     return links
 
 
 def extract_graphics(page: fitz.Page, page_index: int):
-    graphics = []
+    graphics  = []
     g_counter = 0
 
     try:
@@ -290,17 +460,52 @@ def extract_graphics(page: fitz.Page, page_index: int):
         g_counter += 1
 
         graphics.append({
-            "id": graphic_id,
-            "page_index": page_index,
-            "bbox": [float(rect.x0), float(rect.y0), float(rect.x1), float(rect.y1)],
-            "stroke_rgb": float_rgb_to_int(d.get("color")),
-            "fill_rgb": float_rgb_to_int(d.get("fill")),
+            "id":           graphic_id,
+            "page_index":   page_index,
+            "bbox":         [float(rect.x0), float(rect.y0), float(rect.x1), float(rect.y1)],
+            "stroke_rgb":   float_rgb_to_int(d.get("color")),
+            "fill_rgb":     float_rgb_to_int(d.get("fill")),
             "stroke_width": float(d.get("width")) if d.get("width") is not None else None,
-            "opacity": float(d.get("opacity")) if d.get("opacity") is not None else None,
-            "type": d.get("type", "path")
+            "opacity":      float(d.get("opacity")) if d.get("opacity") is not None else None,
+            "type":         d.get("type", "path")
         })
 
     return graphics
+
+
+def extract_bookmarks(doc: fitz.Document):
+    """
+    Extract document outline / bookmarks using PyMuPDF.
+    Kept for batch2 compatibility.
+    """
+    bookmarks = []
+
+    try:
+        toc = doc.get_toc(simple=False)
+    except Exception:
+        toc = []
+
+    if not toc:
+        return bookmarks
+
+    for i, item in enumerate(toc):
+        try:
+            level = item[0] if len(item) > 0 else None
+            title = item[1] if len(item) > 1 else None
+            page  = item[2] if len(item) > 2 else None
+            dest  = item[3] if len(item) > 3 else None
+
+            bookmarks.append({
+                "id":          f"bookmark_{i}",
+                "level":       int(level) if level is not None else None,
+                "title":       str(title).strip() if title else None,
+                "page_index":  int(page - 1) if isinstance(page, int) and page > 0 else None,
+                "destination": str(dest) if dest is not None else None
+            })
+        except Exception:
+            continue
+
+    return bookmarks
 
 
 # -----------------------------
@@ -308,9 +513,8 @@ def extract_graphics(page: fitz.Page, page_index: int):
 # -----------------------------
 
 def extract_pdfminer_blocks(pdf_path: str):
-    text_blocks = []
+    text_blocks   = []
     reading_order = []
-
     block_counter = 0
 
     for page_index, layout in enumerate(extract_pages(pdf_path)):
@@ -335,9 +539,8 @@ def extract_pdfminer_blocks(pdf_path: str):
                         lines.append((y1, x0, x1, y0, line_text))
 
         lines.sort(key=lambda t: (-t[0], t[1]))
-
         current = []
-        last_y = None
+        last_y  = None
 
         def flush_block():
             nonlocal block_counter, current
@@ -347,20 +550,20 @@ def extract_pdfminer_blocks(pdf_path: str):
             block_id = f"block_p{page_index}_{block_counter}"
             block_counter += 1
 
-            x0s = [t[1] for t in current]
-            x1s = [t[2] for t in current]
-            y0s = [t[3] for t in current]
-            y1s = [t[0] for t in current]
-
+            x0s  = [t[1] for t in current]
+            x1s  = [t[2] for t in current]
+            y0s  = [t[3] for t in current]
+            y1s  = [t[0] for t in current]
             bbox = [min(x0s), min(y0s), max(x1s), max(y1s)]
             text = "\n".join([t[4] for t in current])
 
             text_blocks.append({
-                "id": block_id,
-                "page_index": page_index,
-                "bbox_pdfminer": [float(bbox[0]), float(bbox[1]), float(bbox[2]), float(bbox[3])],
-                "text": text,
-                "span_ids": []  # Phase 2.5 fills this
+                "id":           block_id,
+                "page_index":   page_index,
+                "bbox_pdfminer": [float(bbox[0]), float(bbox[1]),
+                                  float(bbox[2]), float(bbox[3])],
+                "text":         text,
+                "span_ids":     []
             })
 
             reading_order.append(block_id)
@@ -389,31 +592,31 @@ def extract_pdfminer_blocks(pdf_path: str):
 
 def align_blocks_to_spans(
     text_blocks: List[Dict[str, Any]],
-    text_spans: List[Dict[str, Any]],
-    pages: List[Dict[str, Any]],
+    text_spans:  List[Dict[str, Any]],
+    pages:       List[Dict[str, Any]],
 ):
     """
     Fill each text_blocks[i]["span_ids"] by matching span centers into block bbox.
-    Also adds "bbox" for the block in PyMuPDF coordinates (for consistency).
+    Also adds "bbox" for the block in PyMuPDF coordinates.
     """
-    # index spans by page
     spans_by_page: Dict[int, List[Dict[str, Any]]] = {}
     for s in text_spans:
         spans_by_page.setdefault(s["page_index"], []).append(s)
 
-    # Map page heights
-    page_height: Dict[int, float] = {p["page_index"]: float(p["height"]) for p in pages}
+    page_height: Dict[int, float] = {
+        p["page_index"]: float(p["height"]) for p in pages
+    }
 
     for blk in text_blocks:
         pno = blk["page_index"]
-        h = page_height.get(pno)
+        h   = page_height.get(pno)
         if h is None:
             continue
 
-        bbox_pym = pdfminer_bbox_to_pymupdf_bbox(blk["bbox_pdfminer"], h)
-        blk["bbox"] = bbox_pym  # consistent bbox for later annotation
+        bbox_pym   = pdfminer_bbox_to_pymupdf_bbox(blk["bbox_pdfminer"], h)
+        blk["bbox"] = bbox_pym
 
-        candidates = spans_by_page.get(pno, [])
+        candidates  = spans_by_page.get(pno, [])
         matched_ids = []
 
         for sp in candidates:
@@ -421,9 +624,7 @@ def align_blocks_to_spans(
             if point_in_bbox(cx, cy, bbox_pym, margin=3.0):
                 matched_ids.append(sp["id"])
 
-        # Optional: sort matched spans by y then x (reading-ish order)
         def span_sort_key(span_id: str):
-            # find span
             s = next((x for x in candidates if x["id"] == span_id), None)
             if not s:
                 return (0, 0)
@@ -431,45 +632,37 @@ def align_blocks_to_spans(
             return (y0, x0)
 
         matched_ids.sort(key=span_sort_key)
-
         blk["span_ids"] = matched_ids
 
     return text_blocks
 
+
+# -----------------------------
+# Structure extraction (pikepdf)
+# -----------------------------
+
 def _pike_to_py(obj):
-    """
-    Convert pikepdf objects into JSON-safe Python types.
-    Keep it conservative: strings, numbers, booleans, dict, list, None.
-    """
     try:
-        # pikepdf.Name like /Figure, /P etc.
         if isinstance(obj, pikepdf.Name):
-            return str(obj)[1:]  # remove leading "/"
-        # pikepdf.String or regular Python str
+            return str(obj)[1:]
         if isinstance(obj, (pikepdf.String, str)):
             return str(obj)
-        # numbers/bools
         if isinstance(obj, (int, float, bool)):
             return obj
-        # null
         if obj is None:
             return None
-        # arrays
         if isinstance(obj, pikepdf.Array):
             return [_pike_to_py(x) for x in obj]
-        # dictionaries
         if isinstance(obj, pikepdf.Dictionary):
             out = {}
             for k, v in obj.items():
                 out[str(k)[1:] if isinstance(k, pikepdf.Name) else str(k)] = _pike_to_py(v)
             return out
-        # fallback
         return str(obj)
     except Exception:
         return str(obj)
 
 
-##########     mapping alt text to images (from  tree structure)    ###############
 def _flatten_structure_nodes(tree: Any) -> List[Dict[str, Any]]:
     nodes: List[Dict[str, Any]] = []
 
@@ -486,103 +679,80 @@ def _flatten_structure_nodes(tree: Any) -> List[Dict[str, Any]]:
             walk(root)
 
     return nodes
-def extract_figure_nodes_from_structure(structure: Dict[str, Any]) -> List[Dict[str, Any]]:
-    figures: List[Dict[str, Any]] = []
 
-    tree = structure.get("tree")
-    flat_nodes = _flatten_structure_nodes(tree)
+
+def extract_figure_nodes_from_structure(structure: Dict[str, Any]) -> List[Dict[str, Any]]:
+    figures:    List[Dict[str, Any]] = []
+    tree        = structure.get("tree")
+    flat_nodes  = _flatten_structure_nodes(tree)
 
     for node in flat_nodes:
         if node.get("role") != "Figure":
             continue
 
-        alt = node.get("alt")
+        alt         = node.get("alt")
         actual_text = node.get("actual_text")
 
         figures.append({
-            "id": node.get("id"),
-            "role": "Figure",
-            "alt": alt,
-            "actual_text": actual_text,
+            "id":           node.get("id"),
+            "role":         "Figure",
+            "alt":          alt,
+            "actual_text":  actual_text,
             "is_decorative": alt is not None and str(alt).strip() == "",
-            "depth": node.get("depth"),
-            "mcids": node.get("mcids", []),
+            "depth":        node.get("depth"),
+            "mcids":        node.get("mcids", []),
             "page_object_ref": node.get("page_object_ref"),
-            "children": node.get("children", []),
+            "children":     node.get("children", []),
         })
 
     return figures
 
+
 def map_single_figure_alt_to_single_image(
-    structure: Dict[str, Any],
+    structure:         Dict[str, Any],
     image_occurrences: List[Dict[str, Any]]
 ) -> None:
-    """
-    Temporary safe fallback:
-    only map alt text when there is exactly one figure in structure
-    and exactly one image occurrence in the document.
-    """
     figures = structure.get("figures", [])
-
-    if len(figures) != 1:
-        return
-    if len(image_occurrences) != 1:
+    if len(figures) != 1 or len(image_occurrences) != 1:
         return
 
     fig = figures[0]
     occ = image_occurrences[0]
 
-    alt = fig.get("alt")
+    alt         = fig.get("alt")
     actual_text = fig.get("actual_text")
-
-    text_alt = alt if alt is not None else actual_text
+    text_alt    = alt if alt is not None else actual_text
 
     if occ.get("alt_source") is not None:
-       return
-
-    occ["alt_text"] = text_alt
-    occ["alt_source"] = "structure_single_match"
-    occ["struct_figure_id"] = fig.get("id")
-
-def map_figures_to_images_by_order(
-    structure: Dict[str, Any],
-    image_occurrences: List[Dict[str, Any]]
-) -> None:
-    """
-    Controlled phase-2 fallback:
-    if the number of structure figures matches the number of image occurrences,
-    map them in order.
-
-    This is only reliable for controlled test PDFs.
-    """
-    figures = structure.get("figures", [])
-
-    if not figures:
         return
 
-    if len(figures) != len(image_occurrences):
+    occ["alt_text"]         = text_alt
+    occ["alt_source"]       = "structure_single_match"
+    occ["struct_figure_id"] = fig.get("id")
+
+
+def map_figures_to_images_by_order(
+    structure:         Dict[str, Any],
+    image_occurrences: List[Dict[str, Any]]
+) -> None:
+    figures = structure.get("figures", [])
+    if not figures or len(figures) != len(image_occurrences):
         return
 
     for fig, occ in zip(figures, image_occurrences):
-        alt = fig.get("alt")
+        alt         = fig.get("alt")
         actual_text = fig.get("actual_text")
-        text_alt = alt if alt is not None else actual_text
+        text_alt    = alt if alt is not None else actual_text
 
         if occ.get("alt_source") is not None:
             continue
 
-        occ["alt_text"] = text_alt
-        occ["alt_source"] = "structure_order_match"
+        occ["alt_text"]         = text_alt
+        occ["alt_source"]       = "structure_order_match"
         occ["struct_figure_id"] = fig.get("id")
 
-def attach_page_index_to_figures(
-    figures: List[Dict[str, Any]],
-    pdf_path: str
-) -> None:
-    """
-    Resolve figure page_object_ref -> page_index using pikepdf page objects.
-    Adds figure["page_index"] when possible.
-    """
+
+def attach_page_index_to_figures(figures: List[Dict[str, Any]], pdf_path: str) -> None:
     try:
         with pikepdf.open(pdf_path) as pdf:
             objgen_to_page_index = {}
@@ -599,34 +769,24 @@ def attach_page_index_to_figures(
                     fig["page_index"] = objgen_to_page_index[ref]
     except Exception:
         for fig in figures:
-            fig.setdefault("page_index", None)   
+            fig.setdefault("page_index", None)
+
 
 def map_figures_to_images_by_page_and_mcid(
-    structure: Dict[str, Any],
+    structure:         Dict[str, Any],
     image_occurrences: List[Dict[str, Any]]
 ) -> None:
-    """
-    Stronger phase-3 mapping:
-    - groups by page
-    - only uses figures that have MCIDs
-    - maps page-local image occurrences to page-local figures
-    - stores mapped MCID for debugging
-
-    Still a controlled heuristic, but much better than document-global order.
-    """
     figures = structure.get("figures", [])
     if not figures or not image_occurrences:
         return
 
     figures_by_page: Dict[int, List[Dict[str, Any]]] = {}
-    images_by_page: Dict[int, List[Dict[str, Any]]] = {}
+    images_by_page:  Dict[int, List[Dict[str, Any]]] = {}
 
     for fig in figures:
         page_index = fig.get("page_index")
-        mcids = fig.get("mcids", [])
-        if page_index is None:
-            continue
-        if not mcids:
+        mcids      = fig.get("mcids", [])
+        if page_index is None or not mcids:
             continue
         figures_by_page.setdefault(page_index, []).append(fig)
 
@@ -641,92 +801,82 @@ def map_figures_to_images_by_page_and_mcid(
         if not page_figures:
             continue
 
-        # stable visual order: top-to-bottom then left-to-right
         def occ_sort_key(occ):
             b = occ.get("bbox", [0, 0, 0, 0])
             return (round(b[1], 3), round(b[0], 3))
 
         def fig_sort_key(fig):
-            # use first MCID as rough stable order
             mcids = fig.get("mcids", [])
-            first_mcid = mcids[0] if mcids else 10**9
-            return first_mcid
+            return mcids[0] if mcids else 10 ** 9
 
-        page_images_sorted = sorted(page_images, key=occ_sort_key)
+        page_images_sorted  = sorted(page_images,  key=occ_sort_key)
         page_figures_sorted = sorted(page_figures, key=fig_sort_key)
 
         if len(page_images_sorted) != len(page_figures_sorted):
             continue
 
         for occ, fig in zip(page_images_sorted, page_figures_sorted):
-            alt = fig.get("alt")
+            alt         = fig.get("alt")
             actual_text = fig.get("actual_text")
-            text_alt = alt if alt is not None else actual_text
+            text_alt    = alt if alt is not None else actual_text
 
-            occ["alt_text"] = text_alt
-            occ["alt_source"] = "structure_page_mcid_match"
+            occ["alt_text"]         = text_alt
+            occ["alt_source"]       = "structure_page_mcid_match"
             occ["struct_figure_id"] = fig.get("id")
-            occ["mapped_mcid"] = fig.get("mcids", [None])[0]                 
-
+            occ["mapped_mcid"]      = fig.get("mcids", [None])[0]
 
 
 def extract_structure_pikepdf(pdf_path: str):
     """
-    Extract:
-      - /Lang (document language)
-      - /StructTreeRoot presence (tagged PDF)
-      - /RoleMap (if present)
-      - a simplified structure tree (roles + children + alt/actualtext if present)
+    Extract /Lang, /StructTreeRoot presence, /RoleMap, and simplified structure tree.
     """
     result = {
-        "has_tags": False,
-        "lang": None,
-        "role_map": None,
-        "tree": None,
-        "validation": {
-            "errors": [],
-            "notes": []
-        }
+        "has_tags":   False,
+        "lang":       None,
+        "role_map":   None,
+        "tree":       None,
+        "validation": {"errors": [], "notes": []}
     }
 
     try:
         with pikepdf.open(pdf_path) as pdf:
             root = pdf.Root
 
-            # Language metadata
+            # /Lang — with parentheses stripping for pikepdf artifact
             try:
                 if "/Lang" in root:
-                    result["lang"] = str(root["/Lang"])
+                    lang_val = str(root["/Lang"]).strip()
+                    if lang_val.startswith("(") and lang_val.endswith(")"):
+                        lang_val = lang_val[1:-1].strip()
+                    result["lang"] = lang_val or None
             except Exception:
                 result["validation"]["notes"].append("Could not read /Lang")
 
-            # StructTreeRoot = tag tree root
             if "/StructTreeRoot" not in root:
-                result["validation"]["errors"].append("No /StructTreeRoot (PDF is likely untagged)")
+                result["validation"]["errors"].append(
+                    "No /StructTreeRoot (PDF is likely untagged)"
+                )
                 return result
 
-            result["has_tags"] = True
+            result["has_tags"]  = True
             struct_root = root["/StructTreeRoot"]
 
-            # RoleMap: mapping custom tags -> standard tags
             try:
                 if "/RoleMap" in struct_root:
                     result["role_map"] = _pike_to_py(struct_root["/RoleMap"])
             except Exception:
                 result["validation"]["notes"].append("Could not read /RoleMap")
 
-            # K = kids of structure tree root (can be array or single dict)
             if "/K" not in struct_root:
                 result["validation"]["errors"].append("StructTreeRoot has no /K children")
                 result["tree"] = []
                 return result
 
             kids = struct_root["/K"]
-            # normalize kids to list
             if not isinstance(kids, pikepdf.Array):
                 kids = pikepdf.Array([kids])
 
-            nodes = []
+            nodes        = []
             node_counter = 0
 
             def walk(node, depth=0):
@@ -734,26 +884,24 @@ def extract_structure_pikepdf(pdf_path: str):
                 node_id = f"node_{node_counter}"
                 node_counter += 1
 
-                # Role /S (e.g., /P, /H1, /Figure)
                 role = None
                 try:
                     if isinstance(node, pikepdf.Dictionary) and "/S" in node:
-                        role = str(node["/S"])[1:]  # drop "/"
+                        role = str(node["/S"])[1:]
                 except Exception:
                     role = None
 
                 out_node = {
-                    "id": node_id,
-                    "role": role,
-                    "depth": depth,
-                    "children": [],
-                    "alt": None,
-                    "actual_text": None,
-                    "mcids": [],
+                    "id":              node_id,
+                    "role":            role,
+                    "depth":           depth,
+                    "children":        [],
+                    "alt":             None,
+                    "actual_text":     None,
+                    "mcids":           [],
                     "page_object_ref": None,
                 }
 
-                # /Alt and /ActualText sometimes exist for tagged figures/spans
                 try:
                     if isinstance(node, pikepdf.Dictionary) and "/Alt" in node:
                         out_node["alt"] = str(node["/Alt"])
@@ -774,24 +922,17 @@ def extract_structure_pikepdf(pdf_path: str):
                 except Exception:
                     pass
 
-                # Traverse children /K
                 try:
                     if isinstance(node, pikepdf.Dictionary) and "/K" in node:
                         child = node["/K"]
 
                         def handle_k_item(item):
-                            # case 1: integer MCID
                             if isinstance(item, int):
                                 out_node["mcids"].append(item)
-                                out_node["children"].append({
-                                    "type": "mcid",
-                                    "value": int(item)
-                                })
+                                out_node["children"].append({"type": "mcid", "value": int(item)})
                                 return
 
-                            # case 2: marked-content reference dictionary
                             if isinstance(item, pikepdf.Dictionary):
-                                # MCR object: has /MCID and maybe /Pg
                                 if "/MCID" in item:
                                     try:
                                         mcid_val = int(item["/MCID"])
@@ -804,22 +945,20 @@ def extract_structure_pikepdf(pdf_path: str):
                                         if "/Pg" in item and hasattr(item["/Pg"], "objgen"):
                                             pg_ref = item["/Pg"].objgen
                                     except Exception:
-                                        pg_ref = None
+                                        pass
 
                                     out_node["children"].append({
-                                        "type": "mcr",
-                                        "mcid": mcid_val,
+                                        "type":            "mcr",
+                                        "mcid":            mcid_val,
                                         "page_object_ref": pg_ref,
                                     })
                                     return
 
-                                # ordinary structure dictionary child
                                 out_node["children"].append(walk(item, depth + 1))
                                 return
 
-                            # fallback
                             out_node["children"].append({
-                                "type": "leaf",
+                                "type":  "leaf",
                                 "value": _pike_to_py(item)
                             })
 
@@ -830,7 +969,9 @@ def extract_structure_pikepdf(pdf_path: str):
                             handle_k_item(child)
 
                 except Exception:
-                    result["validation"]["notes"].append(f"Failed walking children at depth {depth}")
+                    result["validation"]["notes"].append(
+                        f"Failed walking children at depth {depth}"
+                    )
 
                 return out_node
 
@@ -838,7 +979,6 @@ def extract_structure_pikepdf(pdf_path: str):
                 if isinstance(k, pikepdf.Dictionary):
                     nodes.append(walk(k, 0))
                 else:
-                    # sometimes kids are MCIDs directly
                     nodes.append({"type": "leaf", "value": _pike_to_py(k)})
 
             result["tree"] = nodes
@@ -849,28 +989,25 @@ def extract_structure_pikepdf(pdf_path: str):
         return result
 
 
+# -----------------------------
+# OCR
+# -----------------------------
 
 def ocr_image_bytes(img_bytes: bytes, lang: str = "eng"):
-    """
-    Returns (text, confidence)
-    Confidence here is a simple average word confidence (0-100) when available.
-    If not available, returns None for confidence.
-    """
+    """Returns (text, confidence)."""
     try:
         img = Image.open(io.BytesIO(img_bytes)).convert("RGB")
     except Exception:
         return None, None
 
-    # Get text
     try:
         text = pytesseract.image_to_string(img, lang=lang).strip()
     except Exception:
         return None, None
 
-    # Get confidence (optional)
     conf = None
     try:
-        data = pytesseract.image_to_data(img, lang=lang, output_type=pytesseract.Output.DICT)
+        data  = pytesseract.image_to_data(img, lang=lang, output_type=pytesseract.Output.DICT)
         confs = []
         for c in data.get("conf", []):
             try:
@@ -886,68 +1023,34 @@ def ocr_image_bytes(img_bytes: bytes, lang: str = "eng"):
 
     return text if text else None, conf
 
+
 def run_ocr_on_image_occurrences(image_occurrences, asset_bytes_global, min_px: int = 40_000):
-    """
-    OCR only images that are likely to contain readable text.
-    min_px is width*height threshold for skipping tiny icons.
-    """
     for occ in image_occurrences:
         asset_id = occ["asset_id"]
-        b = asset_bytes_global.get(asset_id)
+        b        = asset_bytes_global.get(asset_id)
         if not b:
             continue
 
-        # Optional: skip tiny images based on asset metadata (if you have it)
-        # We'll estimate size using Pillow quickly
         try:
-            img = Image.open(io.BytesIO(b))
+            img  = Image.open(io.BytesIO(b))
             w, h = img.size
             if (w * h) < min_px:
                 continue
         except Exception:
             pass
 
-        text, conf = ocr_image_bytes(b, lang="eng")
-
-        occ["ocr_text"] = text
+        text, conf           = ocr_image_bytes(b, lang="eng")
+        occ["ocr_text"]      = text
         occ["ocr_confidence"] = conf
 
 
 # -----------------------------
-# Main extraction: Phase 1 + 2 + 2.5
+# Interactivity extraction (pikepdf)
 # -----------------------------
 
 def extract_interactivity_pikepdf(pdf_path: str) -> Dict[str, Any]:
     """
-    Extract interactivity signals needed for WCAG 2.1.x checks:
-      - JavaScript presence and triggers (2.1.2, 2.1.4 risk signals)
-      - AcroForm fields with name, type, tab index, and flags (2.1.1, 3.3.2)
-      - Tab order per page (2.1.1)
-
-    Returns:
-    {
-        "has_javascript": bool,
-        "javascript_triggers": [
-            {"trigger": str, "location": str}
-        ],
-        "has_acroform": bool,
-        "acroform_fields": [
-            {
-                "id":         str,   # field partial name /T
-                "type":       str,   # /Tx, /Btn, /Ch, /Sig
-                "flags":      int,   # raw /Ff bitmask
-                "read_only":  bool,
-                "required":   bool,
-                "tooltip":    str | None,  # /TU
-                "page_index": int | None
-            }
-        ],
-        "tab_order": [
-            {"page_index": int, "tabs": str | None}
-            # tabs: "R" (row), "C" (column), "S" (structure), None (unspecified)
-        ],
-        "has_tab_order": bool   # True if ANY page explicitly sets /Tabs
-    }
+    Extract interactivity signals needed for WCAG 2.1.x / 3.3.x / 4.1.2 checks.
     """
     result: Dict[str, Any] = {
         "has_javascript":      False,
@@ -963,7 +1066,6 @@ def extract_interactivity_pikepdf(pdf_path: str) -> Dict[str, Any]:
             root = pdf.Root
 
             # ── JavaScript detection ─────────────────────────────────────────
-            # 1) Document-level OpenAction
             try:
                 if "/OpenAction" in root:
                     action = root["/OpenAction"]
@@ -972,13 +1074,11 @@ def extract_interactivity_pikepdf(pdf_path: str) -> Dict[str, Any]:
                         if s and str(s) in ("/JavaScript", "/JS"):
                             result["has_javascript"] = True
                             result["javascript_triggers"].append({
-                                "trigger":  "OpenAction",
-                                "location": "document"
+                                "trigger": "OpenAction", "location": "document"
                             })
             except Exception:
                 pass
 
-            # 2) Document-level /AA (Additional Actions)
             try:
                 if "/AA" in root:
                     aa = root["/AA"]
@@ -996,20 +1096,17 @@ def extract_interactivity_pikepdf(pdf_path: str) -> Dict[str, Any]:
             except Exception:
                 pass
 
-            # 3) Named JavaScript actions in /Names tree
             try:
                 if "/Names" in root:
                     names = root["/Names"]
                     if isinstance(names, pikepdf.Dictionary) and "/JavaScript" in names:
                         result["has_javascript"] = True
                         result["javascript_triggers"].append({
-                            "trigger":  "Names/JavaScript",
-                            "location": "document"
+                            "trigger": "Names/JavaScript", "location": "document"
                         })
             except Exception:
                 pass
 
-            # 4) Per-page /AA
             try:
                 for page_index, page in enumerate(pdf.pages):
                     if "/AA" in page:
@@ -1028,14 +1125,13 @@ def extract_interactivity_pikepdf(pdf_path: str) -> Dict[str, Any]:
             except Exception:
                 pass
 
-            # ── Tab order per page ───────────────────────────────────────────
+            # ── Tab order ────────────────────────────────────────────────────
             try:
                 for page_index, page in enumerate(pdf.pages):
                     tabs_val = None
                     if "/Tabs" in page:
-                        tabs_val = str(page["/Tabs"])[1:]  # strip leading "/"
+                        tabs_val = str(page["/Tabs"])[1:]
                         result["has_tab_order"] = True
-
                     result["tab_order"].append({
                         "page_index": page_index,
                         "tabs":       tabs_val
@@ -1043,12 +1139,11 @@ def extract_interactivity_pikepdf(pdf_path: str) -> Dict[str, Any]:
             except Exception:
                 pass
 
-            # ── Submit action detection ──────────────────────────────────────
-            # Detect /SubmitForm actions on buttons or document-level actions
+            # ── Submit actions ───────────────────────────────────────────────
             result["submit_actions"] = []
             try:
                 if "/AcroForm" in root:
-                    acroform = root["/AcroForm"]
+                    acroform   = root["/AcroForm"]
                     if isinstance(acroform, pikepdf.Dictionary):
                         fields_arr = acroform.get("/Fields")
                         if fields_arr and isinstance(fields_arr, pikepdf.Array):
@@ -1056,7 +1151,6 @@ def extract_interactivity_pikepdf(pdf_path: str) -> Dict[str, Any]:
                             def find_submit(field_obj, counter=[0]):
                                 if not isinstance(field_obj, pikepdf.Dictionary):
                                     return
-                                # Check /A (action) on the field
                                 try:
                                     if "/A" in field_obj:
                                         action = field_obj["/A"]
@@ -1077,7 +1171,6 @@ def extract_interactivity_pikepdf(pdf_path: str) -> Dict[str, Any]:
                                                 })
                                 except Exception:
                                     pass
-                                # Recurse into Kids
                                 try:
                                     if "/Kids" in field_obj:
                                         kids = field_obj["/Kids"]
@@ -1103,7 +1196,7 @@ def extract_interactivity_pikepdf(pdf_path: str) -> Dict[str, Any]:
 
             result["has_submit_action"] = len(result["submit_actions"]) > 0
 
-
+            # ── AcroForm fields ──────────────────────────────────────────────
             try:
                 if "/AcroForm" not in root:
                     return result
@@ -1120,20 +1213,16 @@ def extract_interactivity_pikepdf(pdf_path: str) -> Dict[str, Any]:
 
                 field_counter = 0
 
-                def process_field(field_obj: pikepdf.Dictionary, page_index: int | None):
+                def process_field(field_obj: pikepdf.Dictionary, page_index):
                     nonlocal field_counter
 
-                    # Recurse into Kids (field groups)
                     if "/Kids" in field_obj:
                         kids = field_obj["/Kids"]
                         if isinstance(kids, pikepdf.Array):
                             for kid in kids:
                                 try:
-                                    if isinstance(kid, pikepdf.Dictionary):
-                                        process_field(kid, page_index)
-                                    else:
-                                        # indirect ref
-                                        process_field(kid.get_object(), page_index)
+                                    obj = kid if isinstance(kid, pikepdf.Dictionary) else kid.get_object()
+                                    process_field(obj, page_index)
                                 except Exception:
                                     pass
                         return
@@ -1141,15 +1230,13 @@ def extract_interactivity_pikepdf(pdf_path: str) -> Dict[str, Any]:
                     field_id = f"field_{field_counter}"
                     field_counter += 1
 
-                    # Field type /FT
                     ft = None
                     try:
                         if "/FT" in field_obj:
-                            ft = str(field_obj["/FT"])[1:]  # Tx, Btn, Ch, Sig
+                            ft = str(field_obj["/FT"])[1:]
                     except Exception:
                         pass
 
-                    # Partial field name /T
                     name = None
                     try:
                         if "/T" in field_obj:
@@ -1157,7 +1244,6 @@ def extract_interactivity_pikepdf(pdf_path: str) -> Dict[str, Any]:
                     except Exception:
                         pass
 
-                    # Tooltip /TU
                     tooltip = None
                     try:
                         if "/TU" in field_obj:
@@ -1165,7 +1251,6 @@ def extract_interactivity_pikepdf(pdf_path: str) -> Dict[str, Any]:
                     except Exception:
                         pass
 
-                    # Field flags /Ff
                     ff = 0
                     try:
                         if "/Ff" in field_obj:
@@ -1173,15 +1258,13 @@ def extract_interactivity_pikepdf(pdf_path: str) -> Dict[str, Any]:
                     except Exception:
                         pass
 
-                    read_only = bool(ff & 1)   # bit 1
-                    required  = bool(ff & 2)   # bit 2
+                    read_only = bool(ff & 1)
+                    required  = bool(ff & 2)
 
-                    # Page reference via /P
                     pg_index = page_index
                     try:
                         if "/P" in field_obj:
                             p_ref = field_obj["/P"]
-                            # find page index by matching object
                             for i, pg in enumerate(pdf.pages):
                                 if pg.objgen == p_ref.objgen:
                                     pg_index = i
@@ -1189,7 +1272,6 @@ def extract_interactivity_pikepdf(pdf_path: str) -> Dict[str, Any]:
                     except Exception:
                         pass
 
-                    # Per-field Additional Actions /AA (validation, format, etc.)
                     field_aa = {}
                     try:
                         if "/AA" in field_obj:
@@ -1202,39 +1284,34 @@ def extract_interactivity_pikepdf(pdf_path: str) -> Dict[str, Any]:
                                         s = entry.get("/S")
                                         if s and str(s) in ("/JavaScript", "/JS"):
                                             is_js = True
-                                    field_aa[str(aa_key)[1:]] = {
-                                        "has_javascript": is_js
-                                    }
+                                    field_aa[str(aa_key)[1:]] = {"has_javascript": is_js}
                     except Exception:
                         pass
 
-                    # Appearance state /AS (checked/unchecked for Btn fields)
                     appearance_state = None
                     try:
                         if "/AS" in field_obj:
-                            appearance_state = str(field_obj["/AS"])[1:]  # strip "/"
+                            appearance_state = str(field_obj["/AS"])[1:]
                     except Exception:
                         pass
 
                     result["acroform_fields"].append({
-                        "id":               field_id,
-                        "name":             name,
-                        "type":             ft,
-                        "flags":            ff,
-                        "read_only":        read_only,
-                        "required":         required,
-                        "tooltip":          tooltip,
-                        "page_index":       pg_index,
+                        "id":                 field_id,
+                        "name":               name,
+                        "type":               ft,
+                        "flags":              ff,
+                        "read_only":          read_only,
+                        "required":           required,
+                        "tooltip":            tooltip,
+                        "page_index":         pg_index,
                         "validation_actions": field_aa,
-                        "appearance_state": appearance_state,  # e.g. "Yes", "Off", None
+                        "appearance_state":   appearance_state,
                     })
 
                 for field_ref in fields_array:
                     try:
-                        if isinstance(field_ref, pikepdf.Dictionary):
-                            process_field(field_ref, None)
-                        else:
-                            process_field(field_ref.get_object(), None)
+                        obj = field_ref if isinstance(field_ref, pikepdf.Dictionary) else field_ref.get_object()
+                        process_field(obj, None)
                     except Exception:
                         pass
 
@@ -1245,112 +1322,136 @@ def extract_interactivity_pikepdf(pdf_path: str) -> Dict[str, Any]:
         result["error"] = f"pikepdf failed: {type(e).__name__}: {e}"
 
     return result
-    
-def extract_document_json(pdf_path: str ,run_ocr: bool = True) -> Dict[str, Any]:
-    # Phase 2 first (uses file path)
+
+
+# -----------------------------
+# Main extraction
+# -----------------------------
+
+def extract_document_json(pdf_path: str, run_ocr: bool = True) -> Dict[str, Any]:
+    # ── Phase 2: pdfminer blocks + reading order ──────────────────────────────
     text_blocks, reading_order = extract_pdfminer_blocks(pdf_path)
 
-    # Phase 1 (visual truth)
+    # ── Phase 1: PyMuPDF visual extraction ───────────────────────────────────
     doc = fitz.open(pdf_path)
 
-    pages: List[Dict[str, Any]] = []
-    text_spans: List[Dict[str, Any]] = []
+    # Metadata (restored: title, author, subject, keywords)
+    pdf_meta = doc.metadata or {}
+    title    = pdf_meta.get("title")
+    author   = pdf_meta.get("author")
+    subject  = pdf_meta.get("subject")
+    keywords = pdf_meta.get("keywords")
 
-    all_image_assets: Dict[str, Any] = {}
+    pages:                 List[Dict[str, Any]] = []
+    text_spans:            List[Dict[str, Any]] = []
+    all_image_assets:      Dict[str, Any]       = {}
     all_image_occurrences: List[Dict[str, Any]] = []
-
-    all_links: List[Dict[str, Any]] = []
-    all_graphics: List[Dict[str, Any]] = []
-    all_asset_bytes: Dict[str, bytes] = {}
-    all_widgets: List[Dict[str, Any]] = []
+    all_links:             List[Dict[str, Any]] = []
+    all_graphics:          List[Dict[str, Any]] = []
+    all_asset_bytes:       Dict[str, bytes]     = {}
+    all_widgets:           List[Dict[str, Any]] = []
+    all_form_fields:       List[Dict[str, Any]] = []  # restored for batch2
 
     for page_index in range(doc.page_count):
         page = doc.load_page(page_index)
 
         pages.append({
             "page_index": page_index,
-            "width": float(page.rect.width),
-            "height": float(page.rect.height),
-            "rotation": int(page.rotation)
+            "width":      float(page.rect.width),
+            "height":     float(page.rect.height),
+            "rotation":   int(page.rotation)
         })
-        all_widgets.extend(extract_widgets(page, page_index))
 
-        # spans
-        text_dict = page.get_text("dict")
+        all_widgets.extend(extract_widgets(page, page_index))
+        all_form_fields.extend(extract_form_fields(page, page_index))  # restored
+
+        # Text spans
+        text_dict    = page.get_text("dict")
         span_counter = 0
 
-        for block_idx,block in  enumerate(text_dict.get("blocks", [])):
+        for block_idx, block in enumerate(text_dict.get("blocks", [])):
             if block.get("type") != 0:
                 continue
-            for line_idx,line in enumerate( block.get("lines", [])):
+            for line_idx, line in enumerate(block.get("lines", [])):
                 for span in line.get("spans", []):
                     bbox = span.get("bbox")
-                    txt = span.get("text", "")
+                    txt  = span.get("text", "")
                     if not bbox or not txt.strip():
                         continue
+
+                    detected_lang = detect_language_safe(txt)  # restored for batch2
 
                     span_id = f"span_p{page_index}_s{span_counter}"
                     span_counter += 1
 
                     text_spans.append({
-                        "id": span_id,
-                        "page_index": page_index,
-                        "bbox": [float(bbox[0]), float(bbox[1]), float(bbox[2]), float(bbox[3])],
-                        "text": txt,
+                        "id":                span_id,
+                        "page_index":        page_index,
+                        "bbox":              [float(bbox[0]), float(bbox[1]),
+                                              float(bbox[2]), float(bbox[3])],
+                        "text":              txt,
+                        "detected_language": detected_lang,        # restored for batch2
                         "font": {
-                            "name": span.get("font", ""),
-                            "size": float(span.get("size", 0.0)),
+                            "name":  span.get("font", ""),
+                            "size":  float(span.get("size", 0.0)),
                             "flags": span.get("flags", None)
                         },
                         "color": {
                             "fill_rgb": int_color_to_rgb(span.get("color"))
                         },
-                        "layout": {
+                        "layout": {                                # incoming v2
                             "block_index": block_idx,
-                            "line_index": line_idx
+                            "line_index":  line_idx
                         },
-                        "presentation_semantics": default_presentation_semantics(),
-                        "resize_risk": default_resize_risk()
+                        "presentation_semantics": default_presentation_semantics(),  # v2
+                        "resize_risk":            default_resize_risk(),              # v2
                     })
 
-        # images
         assets, occurrences, asset_bytes_map = extract_images(page, doc, page_index)
-
         for aid, asset in assets.items():
             all_image_assets[aid] = asset
-
         for aid, img_bytes in asset_bytes_map.items():
             all_asset_bytes[aid] = img_bytes
-
         all_image_occurrences.extend(occurrences)
 
-        # links
         all_links.extend(extract_links(page, page_index))
-
-        # graphics
         all_graphics.extend(extract_graphics(page, page_index))
-    # Phase 5: contrast (needs open doc)
+
+    # ── Phase 5: contrast + media (needs open doc) ───────────────────────────
     compute_contrast_for_spans(doc, text_spans, scale=2.0)
     annotate_graphics_non_text_contrast(doc, all_graphics, scale=2.0)
     annotate_widgets_non_text_contrast(doc, all_widgets, scale=2.0)
+
     media_occurrences = []
     media_occurrences.extend(extract_media_occurrences(doc, text_spans))
     media_occurrences.extend(extract_media_annotations_pikepdf(pdf_path, pages))
     media_occurrences.extend(extract_embedded_files_pikepdf(pdf_path))
     annotate_media_alternatives(media_occurrences, text_spans)
+
+    # Bookmarks extracted before doc.close()
+    bookmarks = extract_bookmarks(doc)  # restored for batch2
+
     doc.close()
-    # Phase 4: OCR (fills image_occurrences[].ocr_text and .ocr_confidence)
+
+    # ── Phase 4: OCR ──────────────────────────────────────────────────────────
     if run_ocr:
-       run_ocr_on_image_occurrences(all_image_occurrences, all_asset_bytes)
+        run_ocr_on_image_occurrences(all_image_occurrences, all_asset_bytes)
+
+    # ── Annotations ───────────────────────────────────────────────────────────
     annotate_text_in_image_context(text_spans, all_image_occurrences)
     annotate_logo_like_text(text_spans, pages)
     annotate_decorative_text(text_spans)
     annotate_ui_labels(text_spans, all_widgets)
-    annotate_resize_risk(text_spans, all_graphics, all_widgets,pages)
-   
-    # Phase 2.5 alignment
+    annotate_resize_risk(text_spans, all_graphics, all_widgets, pages)
+
+    # ── Phase 2.5: align blocks → spans ──────────────────────────────────────
     text_blocks = align_blocks_to_spans(text_blocks, text_spans, pages)
 
+    # ── Derived fields (restored for batch2) ─────────────────────────────────
+    inferred_language  = infer_document_language(text_spans)
+    heading_candidates = detect_heading_candidates(text_spans)
+
+    # ── Structure + figure mapping ────────────────────────────────────────────
     file_hash = sha256_file(pdf_path)
     structure = extract_structure_pikepdf(pdf_path)
 
@@ -1360,38 +1461,51 @@ def extract_document_json(pdf_path: str ,run_ocr: bool = True) -> Dict[str, Any]
     map_figures_to_images_by_page_and_mcid(structure, all_image_occurrences)
     map_figures_to_images_by_order(structure, all_image_occurrences)
 
+    # ── Interactivity (required by batch3) ───────────────────────────────────
     interactivity = extract_interactivity_pikepdf(pdf_path)
 
+    # ── Assemble output ───────────────────────────────────────────────────────
     out = {
         "document": {
             "metadata": {
-                "filename": Path(pdf_path).name,
-                "file_hash_sha256": file_hash,
-                "page_count": len(pages),
+                "filename":          Path(pdf_path).name,
+                "title":             title,     # restored for batch2
+                "author":            author,    # restored for out3.json
+                "subject":           subject,   # restored for out3.json
+                "keywords":          keywords,  # restored for out3.json
+                "file_hash_sha256":  file_hash,
+                "page_count":        len(pages),
                 "coordinate_system": {
                     "units": "pt",
-                    "note": "PyMuPDF bboxes stored in document.*.bbox; pdfminer raw bboxes stored in text_blocks[].bbox_pdfminer"
+                    "note":  (
+                        "PyMuPDF bboxes stored in document.*.bbox; "
+                        "pdfminer raw bboxes stored in text_blocks[].bbox_pdfminer"
+                    )
                 }
             },
-            "pages": pages,
-            "text_spans": text_spans,
-            "text_blocks": text_blocks,
+            "pages":              pages,
+            "text_spans":         text_spans,
+            "text_blocks":        text_blocks,
             "images": {
-                "assets": list(all_image_assets.values()),
+                "assets":      list(all_image_assets.values()),
                 "occurrences": all_image_occurrences
             },
-            "graphics": all_graphics,
-            "links": all_links,
-            "widgets": all_widgets,
+            "graphics":           all_graphics,
+            "links":              all_links,
+            "bookmarks":          bookmarks,        # restored for batch2
+            "form_fields":        all_form_fields,  # restored for batch2
+            "widgets":            all_widgets,
             "media": {
                 "occurrences": media_occurrences
             },
-            "structure": structure,
-            "interactivity": interactivity,
+            "structure":          structure,
+            "interactivity":      interactivity,    # required by batch3
+            "inferred_language":  inferred_language,    # restored for batch2
+            "heading_candidates": heading_candidates,   # restored for batch2
             "reading_order": {
                 "source": "pdfminer",
-                "order": reading_order,
-                "note": "reading order is block IDs"
+                "order":  reading_order,
+                "note":   "reading order is block IDs"
             }
         }
     }
@@ -1401,13 +1515,15 @@ def extract_document_json(pdf_path: str ,run_ocr: bool = True) -> Dict[str, Any]
 
 def main():
     import argparse
-    parser = argparse.ArgumentParser(description="AccessEd parsing: Phase 1 + 2 + 2.5")
+    parser = argparse.ArgumentParser(description="AccessEd PDF parser")
     parser.add_argument("pdf_path", help="Path to input PDF")
     parser.add_argument("--out", default="out3.json", help="Output JSON path")
     args = parser.parse_args()
 
     data = extract_document_json(args.pdf_path)
-    Path(args.out).write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    Path(args.out).write_text(
+        json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
     print(f"Wrote JSON to: {args.out}")
 
 

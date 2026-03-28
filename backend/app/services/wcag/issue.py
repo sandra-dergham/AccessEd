@@ -8,13 +8,12 @@ def make_issue(
     location: Dict[str, Any],
     severity: Severity,
     recommendation: str,
- ) -> Dict[str, Any]:
+) -> Dict[str, Any]:
     obj: Dict[str, Any] = {
         "criterion": criterion,
         "issue": issue,
-        "location": location, 
+        "location": location,
         "severity": severity,
         "recommendation": recommendation,
     }
-   
     return obj
