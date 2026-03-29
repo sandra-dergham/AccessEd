@@ -18,7 +18,6 @@ from .helper_function_b1 import (
 # WCAG 1.1
 ############
 
-#1.1.1
 # 1.1.1
 def rule_1_1_1(document: dict) -> list[dict]:
     issues: list[dict] = []

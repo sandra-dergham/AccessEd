@@ -2,7 +2,6 @@ from fastapi import APIRouter, UploadFile, File, HTTPException
 from uuid import uuid4
 import os
 import sys
-import subprocess
 import json
 
 # Ensure backend/ is on the path so app.services.wcag resolves correctly
@@ -65,52 +64,28 @@ async def upload_pdf(file: UploadFile = File(...)):
             except OSError:
                 pass
             raise HTTPException(status_code=400, detail="Invalid PDF file.")
-
-    # ── Step 1: Run parser ────────────────────────────────────────────────────
-    json_out_path = os.path.join(UPLOAD_DIR, f"{upload_id}.json")
-
-    # Use the venv Python explicitly to ensure all packages are available
-    venv_python = os.path.join(
-        os.path.dirname(__file__), "..", "venv", "Scripts", "python.exe"
-    )
-    if not os.path.exists(venv_python):
-        # Fallback for non-Windows or different venv structure
-        venv_python = os.path.join(
-            os.path.dirname(__file__), "..", "venv", "bin", "python"
-        )
-    if not os.path.exists(venv_python):
-        venv_python = sys.executable  # last resort fallback
-
-    parsing_script = os.path.join(
-        os.path.dirname(__file__), "..", "app", "services", "parsing.py"
-    )
-
-    result = subprocess.run(
-        [
-            venv_python,
-            os.path.abspath(parsing_script),
-            os.path.abspath(out_path),
-            "--out", os.path.abspath(json_out_path)
-        ],
-        capture_output=True,
-        text=True
-    )
-
-    if result.returncode != 0:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Parsing failed: {result.stderr or result.stdout}"
-        )
-
-    # ── Step 2: Load parsed JSON ──────────────────────────────────────────────
+        
+    # ── Step 1: Parse PDF ─────────────────────────────────────────────
     try:
-        with open(json_out_path, "r", encoding="utf-8") as f:
-            doc_json = json.load(f)
+        from app.services.parsing import extract_document_json
+        doc_json = extract_document_json(out_path)
+    except Exception as e:
+       raise HTTPException(
+        status_code=500,
+        detail=f"Parsing failed: {e}"
+    )
+
+   # ── Step 2: Save parsed JSON ──────────────────────────────
+   # will be deleted later
+    try:
+        json_out_path = os.path.join(UPLOAD_DIR, f"{upload_id}.json")
+        with open(json_out_path, "w", encoding="utf-8") as f:
+             json.dump(doc_json, f, ensure_ascii=False, indent=2)
     except Exception as e:
         raise HTTPException(
-            status_code=500,
-            detail=f"Failed to load parsed JSON: {e}"
-        )
+        status_code=500,
+        detail=f"Failed to save JSON: {e}"
+    )
 
     # ── Step 3: Run WCAG detector ─────────────────────────────────────────────
     try:
@@ -133,11 +108,22 @@ async def upload_pdf(file: UploadFile = File(...)):
             detail=f"Report building failed: {e}"
         )
 
-    # ── Step 5: Return response ───────────────────────────────────────────────
+# ── Step 5: Generate PDF report ───────────────────────────────────
+    try:
+        from app.services.wcag.report_builder import build_pdf_report
+        pdf_out_path = os.path.join(UPLOAD_DIR, f"{upload_id}_report.pdf")
+        build_pdf_report(report,pdf_out_path)
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+        detail=f"PDF generation failed: {e}"
+    )
+    # ── Step 6: Return response ───────────────────────────────────────────────
     return {
         "upload_id":         upload_id,
         "original_filename": file.filename,
         "size_bytes":        total,
         "status":            "analysed",
         "report":            report,
+        "pdf_report_path": pdf_out_path,
     }
