@@ -1,4 +1,5 @@
 from fastapi import APIRouter, UploadFile, File, HTTPException
+from fastapi.responses import FileResponse
 from uuid import uuid4
 import os
 import sys
@@ -127,3 +128,18 @@ async def upload_pdf(file: UploadFile = File(...)):
         "report":            report,
         "pdf_report_path": pdf_out_path,
     }
+@router.get("/uploads/{upload_id}/report")
+async def download_report(upload_id: str):
+    pdf_path = os.path.join(UPLOAD_DIR, f"{upload_id}_report.pdf")
+
+    if not os.path.exists(pdf_path):
+        raise HTTPException(
+            status_code=404,
+            detail="Report not found. The upload ID may be invalid or the file has expired.",
+        )
+
+    return FileResponse(
+        path=pdf_path,
+        media_type="application/pdf",
+        filename=f"report-{upload_id}.pdf",
+    )
