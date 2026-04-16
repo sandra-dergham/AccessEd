@@ -1,5 +1,5 @@
 import { useRef, useState } from "react";
-import { uploadPdf } from "../api/upload";
+import { uploadPdf, downloadReport } from "../api/upload";
 
 const MAX_BYTES = 10 * 1024 * 1024;
 
@@ -18,18 +18,20 @@ export default function UploadCard() {
   const [progress, setProgress] = useState<number>(0);
   const [indeterminate, setIndeterminate] = useState(false);
 
+  const [uploadId, setUploadId] = useState<string | null>(null);
+  const [uploadedFilename, setUploadedFilename] = useState<string>("");
+  const [downloading, setDownloading] = useState(false);
+  const [downloadError, setDownloadError] = useState<string | null>(null);
+
   function validate(file: File): string | null {
     setSuccess(null);
-
     const isPdf =
       file.type === "application/pdf" ||
       file.name.toLowerCase().endsWith(".pdf");
-
     if (!isPdf) return "Only PDF files are allowed.";
     if (file.size === 0) return "File is empty.";
-    if (file.size > MAX_BYTES) {
+    if (file.size > MAX_BYTES)
       return `File too large. Max is 10 MB (yours is ${bytesToMB(file.size)} MB).`;
-    }
     return null;
   }
 
@@ -41,17 +43,18 @@ export default function UploadCard() {
     }
 
     setError(null);
+    setUploadId(null);
+    setDownloadError(null);
     setUploading(true);
     setProgress(0);
     setIndeterminate(false);
 
     try {
-      await uploadPdf(file, (p) => {
+      const result = await uploadPdf(file, (p) => {
         if (p.type === "progress") {
           setIndeterminate(false);
           setProgress(p.percent);
         } else if (p.type === "indeterminate") {
-          // still label as uploading, just no % available
           setIndeterminate(true);
         } else if (p.type === "done") {
           setIndeterminate(false);
@@ -59,11 +62,26 @@ export default function UploadCard() {
         }
       });
 
-      setSuccess(`Uploaded successfully: ${file.name}`);
+      setUploadId(result.upload_id);
+      setUploadedFilename(result.original_filename);
+      setSuccess(`Analysed successfully: ${file.name}`);
     } catch (e: any) {
       setError(e?.detail || "Upload failed.");
     } finally {
       setUploading(false);
+    }
+  }
+
+  async function handleDownloadReport() {
+    if (!uploadId) return;
+    setDownloadError(null);
+    setDownloading(true);
+    try {
+      await downloadReport(uploadId, uploadedFilename);
+    } catch (e: any) {
+      setDownloadError(e?.message || "Failed to download report.");
+    } finally {
+      setDownloading(false);
     }
   }
 
@@ -132,13 +150,31 @@ export default function UploadCard() {
               <span>Uploading…</span>
               <span>{indeterminate ? "…" : `${progress}%`}</span>
             </div>
-
             <div className="progress-bar">
               <div
                 className={`progress-fill ${indeterminate ? "indeterminate" : ""}`}
                 style={indeterminate ? undefined : { width: `${progress}%` }}
               />
             </div>
+          </div>
+        )}
+
+        {uploadId && !uploading && (
+          <div className="report-actions">
+            <button
+              className="btn-report"
+              onClick={handleDownloadReport}
+              disabled={downloading}
+              aria-busy={downloading}
+            >
+              {downloading ? "Generating…" : "⬇ Download PDF Report"}
+            </button>
+
+            {downloadError && (
+              <div className="alert error" role="alert">
+                {downloadError}
+              </div>
+            )}
           </div>
         )}
       </div>

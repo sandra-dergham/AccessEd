@@ -8,3 +8,5 @@ pikepdf
 pillow
 pytesseract
 numpy
+langdetect
+reportlab

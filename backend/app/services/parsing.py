@@ -1,4 +1,3 @@
-import json
 import hashlib
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -16,7 +15,7 @@ pytesseract.pytesseract.tesseract_cmd = r"C:\Program Files\Tesseract-OCR\tessera
 
 import numpy as np
 
-from wcag.helper_function_b1 import (
+from .wcag.helper_function_b1 import (
     pdfminer_bbox_to_pymupdf_bbox, default_presentation_semantics, extract_widgets,
     annotate_text_in_image_context, annotate_logo_like_text, annotate_decorative_text,
     default_resize_risk, annotate_resize_risk, center_of_bbox, annotate_ui_labels,
@@ -1513,19 +1512,3 @@ def extract_document_json(pdf_path: str, run_ocr: bool = True) -> Dict[str, Any]
     return out
 
 
-def main():
-    import argparse
-    parser = argparse.ArgumentParser(description="AccessEd PDF parser")
-    parser.add_argument("pdf_path", help="Path to input PDF")
-    parser.add_argument("--out", default="out3.json", help="Output JSON path")
-    args = parser.parse_args()
-
-    data = extract_document_json(args.pdf_path)
-    Path(args.out).write_text(
-        json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"
-    )
-    print(f"Wrote JSON to: {args.out}")
-
-
-if __name__ == "__main__":
-    main()
