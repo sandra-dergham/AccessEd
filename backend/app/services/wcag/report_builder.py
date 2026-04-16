@@ -406,6 +406,7 @@ def build_pdf_report(report: Dict[str, Any], output_path: str):
 
     pdf.output(output_path)
 
+#wrapper
 def build_report_pdf(report_json: dict) -> bytes:
     import tempfile, os
     with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
