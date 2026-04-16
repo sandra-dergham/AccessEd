@@ -405,3 +405,17 @@ def build_pdf_report(report: Dict[str, Any], output_path: str):
         add_paragraph(pdf, "No actionable accessibility issues were found.")
 
     pdf.output(output_path)
+
+def build_report_pdf(report_json: dict) -> bytes:
+    import tempfile, os
+    with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
+        tmp_path = tmp.name
+    try:
+        build_pdf_report(report_json, tmp_path)
+        with open(tmp_path, "rb") as f:
+            return f.read()
+    finally:
+        try:
+            os.remove(tmp_path)
+        except OSError:
+            pass
