@@ -20,7 +20,7 @@ export function uploadPdf(
     formData.append("file", file);
 
     const xhr = new XMLHttpRequest();
-    xhr.open("POST", "http://127.0.0.1:8000/api/upload");
+    xhr.open("POST", "https://accessed-c79k.onrender.com/api/upload");
 
     const noProgressTimer = window.setTimeout(() => {
       onProgress({ type: "indeterminate" });
@@ -71,7 +71,7 @@ export async function downloadReport(
   originalFilename: string
 ): Promise<void> {
   const response = await fetch(
-    `http://127.0.0.1:8000/api/uploads/${uploadId}/report`
+    `https://accessed-c79k.onrender.com/api/uploads/${uploadId}/report`
   );
 
   if (!response.ok) {
