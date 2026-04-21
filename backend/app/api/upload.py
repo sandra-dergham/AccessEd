@@ -1,7 +1,7 @@
 from fastapi import APIRouter, UploadFile, File
 from app.services.storage import save_pdf_temporarily, delete_temp_file
 from app.services.pdf_validator import validate_pdf_structure
-
+from app.services.corrector import apply_corrections
 router = APIRouter()
 
 @router.post("/upload")
