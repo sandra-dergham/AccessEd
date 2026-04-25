@@ -553,6 +553,34 @@ def fix_3_3_2_form_tooltips(
     doc_json: dict,
     original_pdf_path: str,
 ) -> list[dict]:
+    """
+    WCAG 3.3.2 - Missing field tooltip /TU (severity: high/medium/low)
+    Owner: Sandra | Method: Pure code
+
+    TWO SUB-CASES — detect by checking location["field_name"]:
+
+    CASE HIGH (field_name is None — no /T and no /TU):
+      location has: field_id, field_type
+      Fix: use field_type as generic fallback:
+           "Tx"  -> "Text field"
+           "Btn" -> "Button"
+           "Ch"  -> "Dropdown"
+           None/other -> "Form field"
+      Finding field: you have no /T to search by, so iterate AcroForm fields
+      by index or match by page_index + type from doc_json acroform_fields
+
+    CASE MED/LOW (field_name is present — has /T but no /TU):
+      location has: field_id, field_name (the /T value)
+      Fix: _clean_field_name(location["field_name"])
+      Finding field: _find_acroform_field(pdf, location["field_name"])
+
+    WRITE FIX (both cases):
+      field_obj["/TU"] = pikepdf.String(label)
+
+    DATA AVAILABLE:
+      doc_json["document"]["interactivity"]["acroform_fields"]
+        each field: id, name (/T), tooltip (/TU), type, page_index
+    """
     results = []
     targets = _filter_issues(issues, "3.3.2")
     if not targets:
@@ -570,8 +598,7 @@ def fix_3_3_2_form_tooltips(
     for iss in targets:
         loc = iss.get("location", {})
         field_id   = loc.get("field_id")
-        field_name = loc.get("field_name")  # /T value — present in med/low, None in high
-        severity   = iss.get("severity", "")
+        field_name = loc.get("field_name")
         issue_key  = iss.get("issue", "")[:80]
 
         try:
@@ -588,7 +615,7 @@ def fix_3_3_2_form_tooltips(
                                       f"Set /TU='{label}' on field '{field_name}'"))
 
             else:
-                # CASE HIGH: no /T at all — match by field_id in doc_json
+                # CASE HIGH: no /T at all — match by type, no /TU already set
                 doc_field = field_by_id.get(field_id)
                 if doc_field is None:
                     results.append(_skipped("3.3.2", issue_key,
@@ -598,21 +625,20 @@ def fix_3_3_2_form_tooltips(
                 field_type = doc_field.get("type") or loc.get("field_type")
                 label = TYPE_FALLBACK.get(field_type, "Form field")
 
-                # Walk AcroForm by index to find field with no /T
                 acroform = pdf.Root.get("/AcroForm")
                 if acroform is None:
                     results.append(_skipped("3.3.2", issue_key, "No AcroForm in PDF"))
                     continue
 
-                # Match by page_index + type since there's no /T to search by
-                page_index = doc_field.get("page_index")
                 matched = False
                 for field_ref in acroform.get("/Fields", []):
                     try:
-                        obj = field_ref.get_object()
-                        t_val = obj.get("/T")
+                        obj = pdf.get_object(field_ref.objgen)
+                        t_val  = obj.get("/T")
                         ft_val = str(obj.get("/FT", "")).lstrip("/")
-                        if t_val is None and ft_val == field_type:
+                        tu_val = obj.get("/TU")
+
+                        if t_val is None and ft_val == field_type and tu_val is None:
                             obj["/TU"] = pikepdf.String(label)
                             matched = True
                             break
@@ -653,12 +679,11 @@ def fix_4_1_2_figure_alt(
     if not targets:
         return results
 
-    doc_data     = _get_doc(doc_json)
-    figures      = doc_data.get("structure", {}).get("figures", [])
-    occurrences  = doc_data.get("images", {}).get("occurrences", [])
-    text_spans   = doc_data.get("text_spans", [])
+    doc_data    = _get_doc(doc_json)
+    figures     = doc_data.get("structure", {}).get("figures", [])
+    occurrences = doc_data.get("images", {}).get("occurrences", [])
+    text_spans  = doc_data.get("text_spans", [])
 
-    # Build lookups
     fig_by_id  = {f["id"]: f for f in figures if f.get("id")}
     occ_by_fig = {o["struct_figure_id"]: o for o in occurrences if o.get("struct_figure_id")}
 
@@ -666,7 +691,8 @@ def fix_4_1_2_figure_alt(
         fitz_doc = fitz.open(original_pdf_path)
     except Exception as exc:
         for iss in targets:
-            results.append(_skipped("4.1.2", "figure_missing_alt", f"Could not open PDF with fitz: {exc}"))
+            results.append(_skipped("4.1.2", "figure_missing_alt",
+                                    f"Could not open PDF with fitz: {exc}"))
         return results
 
     try:
@@ -680,43 +706,60 @@ def fix_4_1_2_figure_alt(
     def _get_nearby_text(page_index: int, bbox: list) -> str:
         if not bbox or page_index is None:
             return ""
-        x0, y0, x1, y1 = bbox
-        margin = 50
+        y0 = bbox[1]
         nearby = [
             s["text"] for s in text_spans
             if s.get("page_index") == page_index
             and s.get("bbox")
-            and abs(s["bbox"][1] - y0) < margin
+            and abs(s["bbox"][1] - y0) < 50
         ]
         return " ".join(nearby[:10])
 
-    def _extract_image_bytes(page_index: int, asset_id: str) -> bytes | None:
+    def _extract_image_bytes_by_bbox(page_index: int, bbox: list) -> bytes | None:
+        """Extract image bytes from page by finding the image closest to bbox."""
         try:
             page = fitz_doc.load_page(page_index)
-            for img in page.get_image_list(full=True):
-                xref = img[0]
-                base_image = fitz_doc.extract_image(xref)
-                if str(xref) == str(asset_id) or asset_id in str(img):
-                    return base_image["image"]
-            # fallback: return first image on page
-            imgs = page.get_image_list(full=True)
-            if imgs:
-                return fitz_doc.extract_image(imgs[0][0])["image"]
-        except Exception:
-            pass
-        return None
-
-    def _find_figure_node(struct_tree, target_mcids: list) -> "pikepdf.Dictionary | None":
-        """Recursively walk StructTreeRoot to find Figure node matching MCIDs."""
-        if not isinstance(struct_tree, pikepdf.Dictionary):
-            try:
-                struct_tree = struct_tree.get_object()
-            except Exception:
+            img_list = page.get_images(full=True)
+            if not img_list:
                 return None
+
+            if bbox:
+                # Find image whose bbox best overlaps with the figure bbox
+                x0, y0, x1, y1 = bbox
+                best_xref = None
+                best_overlap = -1
+                for img_info in page.get_image_info(xrefs=True):
+                    ix0 = img_info["bbox"][0]
+                    iy0 = img_info["bbox"][1]
+                    ix1 = img_info["bbox"][2]
+                    iy1 = img_info["bbox"][3]
+                    overlap = (
+                        max(0, min(x1, ix1) - max(x0, ix0)) *
+                        max(0, min(y1, iy1) - max(y0, iy0))
+                    )
+                    if overlap > best_overlap:
+                        best_overlap = overlap
+                        best_xref = img_info.get("xref")
+                if best_xref:
+                    return fitz_doc.extract_image(best_xref)["image"]
+
+            # Fallback: return first image on page
+            return fitz_doc.extract_image(img_list[0][0])["image"] if img_list else None
+
+        except Exception as exc:
+            logger.debug("_extract_image_bytes_by_bbox: %s", exc)
+            return None
+
+    def _find_figure_node(struct_tree, target_mcids: list):
+        """Recursively walk StructTreeRoot to find Figure node matching MCIDs."""
+        try:
+            if not isinstance(struct_tree, pikepdf.Dictionary):
+                struct_tree = struct_tree.get_object()
+        except Exception:
+            return None
 
         s_type = str(struct_tree.get("/S", ""))
         if s_type == "/Figure":
-            # Check if MCIDs match
             k = struct_tree.get("/K")
             if k is not None:
                 node_mcids = []
@@ -749,34 +792,35 @@ def fix_4_1_2_figure_alt(
         issue_key = "figure_missing_alt"
         try:
             # Find a figure with no alt text
-            target_fig = None
-            for fig in figures:
-                if not fig.get("alt"):
-                    target_fig = fig
-                    break
-
+            target_fig = next(
+                (f for f in figures if not f.get("alt") and not f.get("actual_text")),
+                None
+            )
             if target_fig is None:
-                results.append(_skipped("4.1.2", issue_key, "No figure with missing /Alt found in doc_json"))
+                results.append(_skipped("4.1.2", issue_key,
+                                        "No figure with missing /Alt found in doc_json"))
                 continue
 
             fig_id     = target_fig["id"]
             mcids      = target_fig.get("mcids", [])
             occ        = occ_by_fig.get(fig_id)
             page_index = occ["page_index"] if occ else None
-            asset_id   = occ["asset_id"]   if occ else None
+            bbox       = occ.get("bbox")   if occ else None
 
-            # Extract image bytes
-            img_bytes = None
-            if page_index is not None and asset_id is not None:
-                img_bytes = _extract_image_bytes(page_index, asset_id)
+            if page_index is None:
+                results.append(_skipped("4.1.2", issue_key,
+                                        f"No page_index for figure '{fig_id}'"))
+                continue
 
+            # Extract image bytes by bbox overlap
+            img_bytes = _extract_image_bytes_by_bbox(page_index, bbox)
             if not img_bytes:
-                results.append(_skipped("4.1.2", issue_key, f"Could not extract image bytes for figure '{fig_id}'"))
+                results.append(_skipped("4.1.2", issue_key,
+                                        f"Could not extract image bytes for figure '{fig_id}'"))
                 continue
 
             # Get nearby text for context
-            bbox         = occ.get("bbox") if occ else None
-            nearby_text  = _get_nearby_text(page_index, bbox)
+            nearby_text = _get_nearby_text(page_index, bbox)
 
             # Call GPT-4o vision
             b64_image = base64.standard_b64encode(img_bytes).decode("utf-8")
@@ -788,42 +832,44 @@ def fix_4_1_2_figure_alt(
             response = client.chat.completions.create(
                 model="gpt-4o",
                 max_tokens=100,
-                messages=[
-                    {
-                        "role": "user",
-                        "content": [
-                            {
-                                "type": "image_url",
-                                "image_url": {
-                                    "url": f"data:image/png;base64,{b64_image}",
-                                    "detail": "low",
-                                },
+                messages=[{
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "image_url",
+                            "image_url": {
+                                "url": f"data:image/png;base64,{b64_image}",
+                                "detail": "low",
                             },
-                            {"type": "text", "text": prompt},
-                        ],
-                    }
-                ],
+                        },
+                        {"type": "text", "text": prompt},
+                    ],
+                }],
             )
             alt_text = response.choices[0].message.content.strip()
 
             # Validate response
             if not alt_text or "cannot" in alt_text.lower() or len(alt_text) > 200:
-                results.append(_skipped("4.1.2", issue_key, f"GPT-4o returned unusable alt text: '{alt_text}'"))
+                results.append(_skipped("4.1.2", issue_key,
+                                        f"GPT-4o returned unusable alt text: '{alt_text}'"))
                 continue
 
             # Find Figure node in StructTreeRoot and write /Alt
             struct_root = pdf.Root.get("/StructTreeRoot")
             if struct_root is None:
-                results.append(_skipped("4.1.2", issue_key, "No /StructTreeRoot in PDF"))
+                results.append(_skipped("4.1.2", issue_key,
+                                        "No /StructTreeRoot in PDF"))
                 continue
 
             figure_node = _find_figure_node(struct_root, mcids)
             if figure_node is None:
-                results.append(_skipped("4.1.2", issue_key, f"Figure node with MCIDs {mcids} not found in struct tree"))
+                results.append(_skipped("4.1.2", issue_key,
+                                        f"Figure node with MCIDs {mcids} not found in struct tree"))
                 continue
 
             figure_node["/Alt"] = pikepdf.String(alt_text)
-            results.append(_fixed("4.1.2", issue_key, f"Set /Alt='{alt_text[:60]}...' on Figure node"))
+            results.append(_fixed("4.1.2", issue_key,
+                                  f"Set /Alt='{alt_text[:60]}' on Figure node"))
 
         except Exception as exc:
             results.append(_skipped("4.1.2", issue_key, f"Error: {exc}"))
