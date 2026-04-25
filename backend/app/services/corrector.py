@@ -553,40 +553,82 @@ def fix_3_3_2_form_tooltips(
     doc_json: dict,
     original_pdf_path: str,
 ) -> list[dict]:
-    """
-    WCAG 3.3.2 - Missing field tooltip /TU (severity: high/medium/low)
-    Owner: Sandra | Method: Pure code
-
-    TWO SUB-CASES — detect by checking location["field_name"]:
-
-    CASE HIGH (field_name is None — no /T and no /TU):
-      location has: field_id, field_type
-      Fix: use field_type as generic fallback:
-           "Tx"  -> "Text field"
-           "Btn" -> "Button"
-           "Ch"  -> "Dropdown"
-           None/other -> "Form field"
-      Finding field: you have no /T to search by, so iterate AcroForm fields
-      by index or match by page_index + type from doc_json acroform_fields
-
-    CASE MED/LOW (field_name is present — has /T but no /TU):
-      location has: field_id, field_name (the /T value)
-      Fix: _clean_field_name(location["field_name"])
-      Finding field: _find_acroform_field(pdf, location["field_name"])
-
-    WRITE FIX (both cases):
-      field_obj["/TU"] = pikepdf.String(label)
-
-    DATA AVAILABLE:
-      doc_json["document"]["interactivity"]["acroform_fields"]
-        each field: id, name (/T), tooltip (/TU), type, page_index
-    """
-    # Sandra implements here
     results = []
     targets = _filter_issues(issues, "3.3.2")
+    if not targets:
+        return results
+
+    acroform_fields = (
+        _get_doc(doc_json)
+        .get("interactivity", {})
+        .get("acroform_fields", [])
+    )
+    field_by_id = {f["id"]: f for f in acroform_fields if f.get("id")}
+
+    TYPE_FALLBACK = {"Tx": "Text field", "Btn": "Button", "Ch": "Dropdown"}
+
     for iss in targets:
-        results.append(_skipped("3.3.2", iss.get("issue", "")[:80],
-                                "Not yet implemented - Sandra"))
+        loc = iss.get("location", {})
+        field_id   = loc.get("field_id")
+        field_name = loc.get("field_name")  # /T value — present in med/low, None in high
+        severity   = iss.get("severity", "")
+        issue_key  = iss.get("issue", "")[:80]
+
+        try:
+            if field_name:
+                # CASE MED/LOW: has /T, just missing /TU
+                label = _clean_field_name(field_name)
+                field_obj = _find_acroform_field(pdf, field_name)
+                if field_obj is None:
+                    results.append(_skipped("3.3.2", issue_key,
+                                            f"Field '{field_name}' not found in AcroForm"))
+                    continue
+                field_obj["/TU"] = pikepdf.String(label)
+                results.append(_fixed("3.3.2", issue_key,
+                                      f"Set /TU='{label}' on field '{field_name}'"))
+
+            else:
+                # CASE HIGH: no /T at all — match by field_id in doc_json
+                doc_field = field_by_id.get(field_id)
+                if doc_field is None:
+                    results.append(_skipped("3.3.2", issue_key,
+                                            f"field_id '{field_id}' not found in doc_json"))
+                    continue
+
+                field_type = doc_field.get("type") or loc.get("field_type")
+                label = TYPE_FALLBACK.get(field_type, "Form field")
+
+                # Walk AcroForm by index to find field with no /T
+                acroform = pdf.Root.get("/AcroForm")
+                if acroform is None:
+                    results.append(_skipped("3.3.2", issue_key, "No AcroForm in PDF"))
+                    continue
+
+                # Match by page_index + type since there's no /T to search by
+                page_index = doc_field.get("page_index")
+                matched = False
+                for field_ref in acroform.get("/Fields", []):
+                    try:
+                        obj = field_ref.get_object()
+                        t_val = obj.get("/T")
+                        ft_val = str(obj.get("/FT", "")).lstrip("/")
+                        if t_val is None and ft_val == field_type:
+                            obj["/TU"] = pikepdf.String(label)
+                            matched = True
+                            break
+                    except Exception:
+                        continue
+
+                if matched:
+                    results.append(_fixed("3.3.2", issue_key,
+                                          f"Set /TU='{label}' on unnamed {field_type} field"))
+                else:
+                    results.append(_skipped("3.3.2", issue_key,
+                                            f"Could not locate unnamed field in AcroForm"))
+
+        except Exception as exc:
+            results.append(_skipped("3.3.2", issue_key, f"Error: {exc}"))
+
     return results
 
 
@@ -644,26 +686,6 @@ def fix_4_1_2_checkbox_state(
     doc_json: dict,
     original_pdf_path: str,
 ) -> list[dict]:
-    """
-    WCAG 4.1.2 - Checkbox/radio missing /AS appearance state (severity: high)
-    Owner: Sandra | Method: Pure code
-
-    DATA AVAILABLE:
-      issue["location"]["field_id"]   -> field ID
-      issue["location"]["field_type"] -> "checkbox" or "radio button"
-
-      doc_json["document"]["interactivity"]["acroform_fields"]
-        -> find by field_id -> get field["name"] (/T value)
-
-    FIX STEPS:
-      1. Filter: criterion="4.1.2", "appearance state" in issue text
-      2. For each: find field in acroform_fields by field_id -> get field["name"]
-      3. field_obj = _find_acroform_field(pdf, field["name"])
-      4. Write: field_obj["/AS"] = pikepdf.Name("/Off")
-         /Off = universal PDF spec default for unchecked state
-      5. Return _fixed(...) on success
-    """
-    # Sandra implements here
     results = []
     targets = [
         iss for iss in issues
@@ -671,9 +693,47 @@ def fix_4_1_2_checkbox_state(
         and "appearance state" in str(iss.get("issue", ""))
         and iss.get("severity") not in {"pass", "not_applicable"}
     ]
+    if not targets:
+        return results
+
+    acroform_fields = (
+        _get_doc(doc_json)
+        .get("interactivity", {})
+        .get("acroform_fields", [])
+    )
+    field_by_id = {f["id"]: f for f in acroform_fields if f.get("id")}
+
     for iss in targets:
-        results.append(_skipped("4.1.2", "checkbox_missing_as_state",
-                                "Not yet implemented - Sandra"))
+        loc = iss.get("location", {})
+        field_id  = loc.get("field_id")
+        issue_key = "checkbox_missing_as_state"
+
+        try:
+            doc_field = field_by_id.get(field_id)
+            if doc_field is None:
+                results.append(_skipped("4.1.2", issue_key,
+                                        f"field_id '{field_id}' not found in doc_json"))
+                continue
+
+            field_name = doc_field.get("name")
+            if not field_name:
+                results.append(_skipped("4.1.2", issue_key,
+                                        f"Field has no /T value, cannot locate in AcroForm"))
+                continue
+
+            field_obj = _find_acroform_field(pdf, field_name)
+            if field_obj is None:
+                results.append(_skipped("4.1.2", issue_key,
+                                        f"Field '{field_name}' not found in AcroForm"))
+                continue
+
+            field_obj["/AS"] = pikepdf.Name("/Off")
+            results.append(_fixed("4.1.2", issue_key,
+                                  f"Set /AS=/Off on field '{field_name}'"))
+
+        except Exception as exc:
+            results.append(_skipped("4.1.2", issue_key, f"Error: {exc}"))
+
     return results
 
 
@@ -683,32 +743,35 @@ def fix_2_1_1_tab_order(
     doc_json: dict,
     original_pdf_path: str,
 ) -> list[dict]:
-    """
-    WCAG 2.1.1 - No /Tabs on pages with form fields (severity: medium)
-    Owner: Sandra | Method: Pure code
-
-    DATA AVAILABLE:
-      doc_json["document"]["interactivity"]["has_tab_order"] -> False
-      doc_json["document"]["interactivity"]["acroform_fields"]
-        -> each field has page_index -> tells you which pages have fields
-      doc_json["document"]["interactivity"]["tab_order"]
-        -> list of {page_index, tabs} tabs=None on affected pages
-
-    FIX STEPS:
-      1. Check issue exists for 2.1.1
-      2. Collect unique page_index values from acroform_fields
-      3. For each page_index:
-           pdf.pages[page_index]["/Tabs"] = pikepdf.Name("/S")
-           /S = structure order (Tab key follows logical reading order)
-      4. Return _fixed(...) listing how many pages were updated
-    """
-    # Sandra implements here
     results = []
     targets = _filter_issues(issues, "2.1.1")
     if not targets:
         return results
-    results.append(_skipped("2.1.1", "no_tab_order",
-                            "Not yet implemented - Sandra"))
+
+    try:
+        acroform_fields = (
+            _get_doc(doc_json)
+            .get("interactivity", {})
+            .get("acroform_fields", [])
+        )
+        page_indices = {f["page_index"] for f in acroform_fields if f.get("page_index") is not None}
+
+        if not page_indices:
+            results.append(_skipped("2.1.1", "no_tab_order", "No form fields found on any page"))
+            return results
+
+        for page_index in sorted(page_indices):
+            if page_index < len(pdf.pages):
+                pdf.pages[page_index]["/Tabs"] = pikepdf.Name("/S")
+
+        results.append(_fixed(
+            "2.1.1",
+            "no_tab_order",
+            f"Set /Tabs /S on {len(page_indices)} page(s): {sorted(page_indices)}"
+        ))
+    except Exception as exc:
+        results.append(_skipped("2.1.1", "no_tab_order", f"Error: {exc}"))
+
     return results
 
 
