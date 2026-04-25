@@ -67,28 +67,38 @@ async def upload_pdf(file: UploadFile = File(...)):
             except OSError:
                 pass
             raise HTTPException(status_code=400, detail="Invalid PDF file.")
-
+        
     # ── Step 1: Parse PDF ─────────────────────────────────────────────
     try:
         from app.services.parsing import extract_document_json
         doc_json = extract_document_json(out_path)
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Parsing failed: {e}")
+       raise HTTPException(
+        status_code=500,
+        detail=f"Parsing failed: {e}"
+    )
 
-    # ── Step 2: Save parsed JSON ──────────────────────────────
+   # ── Step 2: Save parsed JSON ──────────────────────────────
+   # will be deleted later
     try:
         json_out_path = os.path.join(UPLOAD_DIR, f"{upload_id}.json")
         with open(json_out_path, "w", encoding="utf-8") as f:
-            json.dump(doc_json, f, ensure_ascii=False, indent=2)
+             json.dump(doc_json, f, ensure_ascii=False, indent=2)
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to save JSON: {e}")
+        raise HTTPException(
+        status_code=500,
+        detail=f"Failed to save JSON: {e}"
+    )
 
     # ── Step 3: Run WCAG detector ─────────────────────────────────────────────
     try:
         from app.services.wcag.detector import run_wcag_detector
         issues = run_wcag_detector(doc_json)
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"WCAG detection failed: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"WCAG detection failed: {e}"
+        )
 
     # ── Step 4: Build report ──────────────────────────────────────────────────
     try:
@@ -111,36 +121,24 @@ async def upload_pdf(file: UploadFile = File(...)):
             detail=f"Failed to save report: {e}"
         )
 
-    # ── Step 5: Generate PDF report ───────────────────────────────────────────
+# ── Step 5: Generate PDF report ───────────────────────────────────
     try:
         from app.services.wcag.report_builder import build_pdf_report
         pdf_out_path = os.path.join(UPLOAD_DIR, f"{upload_id}_report.pdf")
-        build_pdf_report(report, pdf_out_path)
+        build_pdf_report(report,pdf_out_path)
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"PDF generation failed: {e}")
-
-    # ── Step 5.5: Generate corrected PDF ──────────────────────────────────────
-    try:
-        corrected_path = os.path.join(UPLOAD_DIR, f"{upload_id}_corrected.pdf")
-        correction_report = apply_corrections(
-            original_pdf_path=out_path,
-            issues=issues,
-            doc_json=doc_json,
-            output_path=corrected_path,
-        )
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Correction engine failed: {e}")
-
+        raise HTTPException(
+            status_code=500,
+        detail=f"PDF generation failed: {e}"
+    )
     # ── Step 6: Return response ───────────────────────────────────────────────
     return {
-        "upload_id":          upload_id,
-        "original_filename":  file.filename,
-        "size_bytes":         total,
-        "status":             "analysed",
-        "report":             report,
-        "pdf_report_path":    pdf_out_path,
-        "corrected_pdf_path": corrected_path,
-        "correction_report":  correction_report,
+        "upload_id":         upload_id,
+        "original_filename": file.filename,
+        "size_bytes":        total,
+        "status":            "analysed",
+        "report":            report,
+        "pdf_report_path": pdf_out_path,
     }
 
 @router.get("/uploads/{upload_id}/report")
