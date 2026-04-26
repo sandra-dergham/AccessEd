@@ -581,12 +581,80 @@ def fix_3_3_2_form_tooltips(
       doc_json["document"]["interactivity"]["acroform_fields"]
         each field: id, name (/T), tooltip (/TU), type, page_index
     """
-    # Sandra implements here
     results = []
     targets = _filter_issues(issues, "3.3.2")
+    if not targets:
+        return results
+
+    acroform_fields = (
+        _get_doc(doc_json)
+        .get("interactivity", {})
+        .get("acroform_fields", [])
+    )
+    field_by_id = {f["id"]: f for f in acroform_fields if f.get("id")}
+
+    TYPE_FALLBACK = {"Tx": "Text field", "Btn": "Button", "Ch": "Dropdown"}
+
     for iss in targets:
-        results.append(_skipped("3.3.2", iss.get("issue", "")[:80],
-                                "Not yet implemented - Sandra"))
+        loc = iss.get("location", {})
+        field_id   = loc.get("field_id")
+        field_name = loc.get("field_name")
+        issue_key  = iss.get("issue", "")[:80]
+
+        try:
+            if field_name:
+                # CASE MED/LOW: has /T, just missing /TU
+                label = _clean_field_name(field_name)
+                field_obj = _find_acroform_field(pdf, field_name)
+                if field_obj is None:
+                    results.append(_skipped("3.3.2", issue_key,
+                                            f"Field '{field_name}' not found in AcroForm"))
+                    continue
+                field_obj["/TU"] = pikepdf.String(label)
+                results.append(_fixed("3.3.2", issue_key,
+                                      f"Set /TU='{label}' on field '{field_name}'"))
+
+            else:
+                # CASE HIGH: no /T at all — match by type, no /TU already set
+                doc_field = field_by_id.get(field_id)
+                if doc_field is None:
+                    results.append(_skipped("3.3.2", issue_key,
+                                            f"field_id '{field_id}' not found in doc_json"))
+                    continue
+
+                field_type = doc_field.get("type") or loc.get("field_type")
+                label = TYPE_FALLBACK.get(field_type, "Form field")
+
+                acroform = pdf.Root.get("/AcroForm")
+                if acroform is None:
+                    results.append(_skipped("3.3.2", issue_key, "No AcroForm in PDF"))
+                    continue
+
+                matched = False
+                for field_ref in acroform.get("/Fields", []):
+                    try:
+                        obj = pdf.get_object(field_ref.objgen)
+                        t_val  = obj.get("/T")
+                        ft_val = str(obj.get("/FT", "")).lstrip("/")
+                        tu_val = obj.get("/TU")
+
+                        if t_val is None and ft_val == field_type and tu_val is None:
+                            obj["/TU"] = pikepdf.String(label)
+                            matched = True
+                            break
+                    except Exception:
+                        continue
+
+                if matched:
+                    results.append(_fixed("3.3.2", issue_key,
+                                          f"Set /TU='{label}' on unnamed {field_type} field"))
+                else:
+                    results.append(_skipped("3.3.2", issue_key,
+                                            f"Could not locate unnamed field in AcroForm"))
+
+        except Exception as exc:
+            results.append(_skipped("3.3.2", issue_key, f"Error: {exc}"))
+
     return results
 
 
@@ -596,34 +664,10 @@ def fix_4_1_2_figure_alt(
     doc_json: dict,
     original_pdf_path: str,
 ) -> list[dict]:
-    """
-    WCAG 4.1.2 - Figure node missing /Alt in struct tree (severity: high)
-    Owner: Sandra | Method: GPT-4o vision
+    import base64
+    import fitz
+    from app.services.openai_client import get_openai_client
 
-    DATA AVAILABLE:
-      doc_json["document"]["structure"]["figures"]
-        each fig: id, alt (None=problem), mcids, page_object_ref, children
-
-      doc_json["document"]["images"]["occurrences"]
-        each occ: struct_figure_id (matches fig["id"]), asset_id, page_index
-
-      Image bytes: re-open original_pdf_path with fitz (same as Jana's 1.1.1)
-
-    FIX STEPS:
-      1. Filter issues: criterion="4.1.2", "Figure" and "/Alt" in issue text
-      2. For each: find figure node in doc_json structure figures where alt=None
-      3. Find image occurrence via occ["struct_figure_id"] == fig["id"]
-      4. Extract image bytes with fitz, call GPT-4o (same prompt as 1.1.1)
-      5. Walk pdf.Root["/StructTreeRoot"]["/K"] recursively to find Figure node
-         matching by MCIDs or page_object_ref
-      6. Write: figure_node["/Alt"] = pikepdf.String(alt_text)
-         (Node already exists — just add /Alt to it, simpler than 1.1.1)
-      7. Return _fixed(...) on success
-
-    NOTE: The Figure node already exists here. Much simpler than 1.1.1
-    because you only need to write /Alt onto an existing node.
-    """
-    # Sandra implements here
     results = []
     targets = [
         iss for iss in issues
@@ -632,9 +676,205 @@ def fix_4_1_2_figure_alt(
         and "/Alt" in str(iss.get("issue", ""))
         and iss.get("severity") not in {"pass", "not_applicable"}
     ]
+    if not targets:
+        return results
+
+    doc_data    = _get_doc(doc_json)
+    figures     = doc_data.get("structure", {}).get("figures", [])
+    occurrences = doc_data.get("images", {}).get("occurrences", [])
+    text_spans  = doc_data.get("text_spans", [])
+
+    fig_by_id  = {f["id"]: f for f in figures if f.get("id")}
+    occ_by_fig = {o["struct_figure_id"]: o for o in occurrences if o.get("struct_figure_id")}
+
+    try:
+        fitz_doc = fitz.open(original_pdf_path)
+    except Exception as exc:
+        for iss in targets:
+            results.append(_skipped("4.1.2", "figure_missing_alt",
+                                    f"Could not open PDF with fitz: {exc}"))
+        return results
+
+    try:
+        client = get_openai_client()
+    except RuntimeError as exc:
+        for iss in targets:
+            results.append(_skipped("4.1.2", "figure_missing_alt", str(exc)))
+        fitz_doc.close()
+        return results
+
+    def _get_nearby_text(page_index: int, bbox: list) -> str:
+        if not bbox or page_index is None:
+            return ""
+        y0 = bbox[1]
+        nearby = [
+            s["text"] for s in text_spans
+            if s.get("page_index") == page_index
+            and s.get("bbox")
+            and abs(s["bbox"][1] - y0) < 50
+        ]
+        return " ".join(nearby[:10])
+
+    def _extract_image_bytes_by_bbox(page_index: int, bbox: list) -> bytes | None:
+        """Extract image bytes from page by finding the image closest to bbox."""
+        try:
+            page = fitz_doc.load_page(page_index)
+            img_list = page.get_images(full=True)
+            if not img_list:
+                return None
+
+            if bbox:
+                # Find image whose bbox best overlaps with the figure bbox
+                x0, y0, x1, y1 = bbox
+                best_xref = None
+                best_overlap = -1
+                for img_info in page.get_image_info(xrefs=True):
+                    ix0 = img_info["bbox"][0]
+                    iy0 = img_info["bbox"][1]
+                    ix1 = img_info["bbox"][2]
+                    iy1 = img_info["bbox"][3]
+                    overlap = (
+                        max(0, min(x1, ix1) - max(x0, ix0)) *
+                        max(0, min(y1, iy1) - max(y0, iy0))
+                    )
+                    if overlap > best_overlap:
+                        best_overlap = overlap
+                        best_xref = img_info.get("xref")
+                if best_xref:
+                    return fitz_doc.extract_image(best_xref)["image"]
+
+            # Fallback: return first image on page
+            return fitz_doc.extract_image(img_list[0][0])["image"] if img_list else None
+
+        except Exception as exc:
+            logger.debug("_extract_image_bytes_by_bbox: %s", exc)
+            return None
+
+    def _find_figure_node(struct_tree, target_mcids: list):
+        """Recursively walk StructTreeRoot to find Figure node matching MCIDs."""
+        try:
+            if not isinstance(struct_tree, pikepdf.Dictionary):
+                struct_tree = struct_tree.get_object()
+        except Exception:
+            return None
+
+        s_type = str(struct_tree.get("/S", ""))
+        if s_type == "/Figure":
+            k = struct_tree.get("/K")
+            if k is not None:
+                node_mcids = []
+                if isinstance(k, pikepdf.Array):
+                    for item in k:
+                        try:
+                            node_mcids.append(int(item))
+                        except Exception:
+                            pass
+                else:
+                    try:
+                        node_mcids.append(int(k))
+                    except Exception:
+                        pass
+                if any(m in node_mcids for m in (target_mcids or [])):
+                    return struct_tree
+
+        kids = struct_tree.get("/K")
+        if kids is None:
+            return None
+        if not isinstance(kids, pikepdf.Array):
+            kids = [kids]
+        for kid in kids:
+            found = _find_figure_node(kid, target_mcids)
+            if found is not None:
+                return found
+        return None
+
     for iss in targets:
-        results.append(_skipped("4.1.2", "figure_missing_alt",
-                                "Not yet implemented - Sandra"))
+        issue_key = "figure_missing_alt"
+        try:
+            # Find a figure with no alt text
+            target_fig = next(
+                (f for f in figures if not f.get("alt") and not f.get("actual_text")),
+                None
+            )
+            if target_fig is None:
+                results.append(_skipped("4.1.2", issue_key,
+                                        "No figure with missing /Alt found in doc_json"))
+                continue
+
+            fig_id     = target_fig["id"]
+            mcids      = target_fig.get("mcids", [])
+            occ        = occ_by_fig.get(fig_id)
+            page_index = occ["page_index"] if occ else None
+            bbox       = occ.get("bbox")   if occ else None
+
+            if page_index is None:
+                results.append(_skipped("4.1.2", issue_key,
+                                        f"No page_index for figure '{fig_id}'"))
+                continue
+
+            # Extract image bytes by bbox overlap
+            img_bytes = _extract_image_bytes_by_bbox(page_index, bbox)
+            if not img_bytes:
+                results.append(_skipped("4.1.2", issue_key,
+                                        f"Could not extract image bytes for figure '{fig_id}'"))
+                continue
+
+            # Get nearby text for context
+            nearby_text = _get_nearby_text(page_index, bbox)
+
+            # Call GPT-4o vision
+            b64_image = base64.standard_b64encode(img_bytes).decode("utf-8")
+            prompt = (
+                f"Describe this image in one concise sentence (max 125 characters) "
+                f"suitable as alt text for a PDF. Context: {nearby_text}. "
+                f"Return ONLY the alt text. No explanation. No quotes."
+            )
+            response = client.chat.completions.create(
+                model="gpt-4o",
+                max_tokens=100,
+                messages=[{
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "image_url",
+                            "image_url": {
+                                "url": f"data:image/png;base64,{b64_image}",
+                                "detail": "low",
+                            },
+                        },
+                        {"type": "text", "text": prompt},
+                    ],
+                }],
+            )
+            alt_text = response.choices[0].message.content.strip()
+
+            # Validate response
+            if not alt_text or "cannot" in alt_text.lower() or len(alt_text) > 200:
+                results.append(_skipped("4.1.2", issue_key,
+                                        f"GPT-4o returned unusable alt text: '{alt_text}'"))
+                continue
+
+            # Find Figure node in StructTreeRoot and write /Alt
+            struct_root = pdf.Root.get("/StructTreeRoot")
+            if struct_root is None:
+                results.append(_skipped("4.1.2", issue_key,
+                                        "No /StructTreeRoot in PDF"))
+                continue
+
+            figure_node = _find_figure_node(struct_root, mcids)
+            if figure_node is None:
+                results.append(_skipped("4.1.2", issue_key,
+                                        f"Figure node with MCIDs {mcids} not found in struct tree"))
+                continue
+
+            figure_node["/Alt"] = pikepdf.String(alt_text)
+            results.append(_fixed("4.1.2", issue_key,
+                                  f"Set /Alt='{alt_text[:60]}' on Figure node"))
+
+        except Exception as exc:
+            results.append(_skipped("4.1.2", issue_key, f"Error: {exc}"))
+
+    fitz_doc.close()
     return results
 
 
@@ -644,26 +884,6 @@ def fix_4_1_2_checkbox_state(
     doc_json: dict,
     original_pdf_path: str,
 ) -> list[dict]:
-    """
-    WCAG 4.1.2 - Checkbox/radio missing /AS appearance state (severity: high)
-    Owner: Sandra | Method: Pure code
-
-    DATA AVAILABLE:
-      issue["location"]["field_id"]   -> field ID
-      issue["location"]["field_type"] -> "checkbox" or "radio button"
-
-      doc_json["document"]["interactivity"]["acroform_fields"]
-        -> find by field_id -> get field["name"] (/T value)
-
-    FIX STEPS:
-      1. Filter: criterion="4.1.2", "appearance state" in issue text
-      2. For each: find field in acroform_fields by field_id -> get field["name"]
-      3. field_obj = _find_acroform_field(pdf, field["name"])
-      4. Write: field_obj["/AS"] = pikepdf.Name("/Off")
-         /Off = universal PDF spec default for unchecked state
-      5. Return _fixed(...) on success
-    """
-    # Sandra implements here
     results = []
     targets = [
         iss for iss in issues
@@ -671,9 +891,47 @@ def fix_4_1_2_checkbox_state(
         and "appearance state" in str(iss.get("issue", ""))
         and iss.get("severity") not in {"pass", "not_applicable"}
     ]
+    if not targets:
+        return results
+
+    acroform_fields = (
+        _get_doc(doc_json)
+        .get("interactivity", {})
+        .get("acroform_fields", [])
+    )
+    field_by_id = {f["id"]: f for f in acroform_fields if f.get("id")}
+
     for iss in targets:
-        results.append(_skipped("4.1.2", "checkbox_missing_as_state",
-                                "Not yet implemented - Sandra"))
+        loc = iss.get("location", {})
+        field_id  = loc.get("field_id")
+        issue_key = "checkbox_missing_as_state"
+
+        try:
+            doc_field = field_by_id.get(field_id)
+            if doc_field is None:
+                results.append(_skipped("4.1.2", issue_key,
+                                        f"field_id '{field_id}' not found in doc_json"))
+                continue
+
+            field_name = doc_field.get("name")
+            if not field_name:
+                results.append(_skipped("4.1.2", issue_key,
+                                        f"Field has no /T value, cannot locate in AcroForm"))
+                continue
+
+            field_obj = _find_acroform_field(pdf, field_name)
+            if field_obj is None:
+                results.append(_skipped("4.1.2", issue_key,
+                                        f"Field '{field_name}' not found in AcroForm"))
+                continue
+
+            field_obj["/AS"] = pikepdf.Name("/Off")
+            results.append(_fixed("4.1.2", issue_key,
+                                  f"Set /AS=/Off on field '{field_name}'"))
+
+        except Exception as exc:
+            results.append(_skipped("4.1.2", issue_key, f"Error: {exc}"))
+
     return results
 
 
@@ -683,32 +941,35 @@ def fix_2_1_1_tab_order(
     doc_json: dict,
     original_pdf_path: str,
 ) -> list[dict]:
-    """
-    WCAG 2.1.1 - No /Tabs on pages with form fields (severity: medium)
-    Owner: Sandra | Method: Pure code
-
-    DATA AVAILABLE:
-      doc_json["document"]["interactivity"]["has_tab_order"] -> False
-      doc_json["document"]["interactivity"]["acroform_fields"]
-        -> each field has page_index -> tells you which pages have fields
-      doc_json["document"]["interactivity"]["tab_order"]
-        -> list of {page_index, tabs} tabs=None on affected pages
-
-    FIX STEPS:
-      1. Check issue exists for 2.1.1
-      2. Collect unique page_index values from acroform_fields
-      3. For each page_index:
-           pdf.pages[page_index]["/Tabs"] = pikepdf.Name("/S")
-           /S = structure order (Tab key follows logical reading order)
-      4. Return _fixed(...) listing how many pages were updated
-    """
-    # Sandra implements here
     results = []
     targets = _filter_issues(issues, "2.1.1")
     if not targets:
         return results
-    results.append(_skipped("2.1.1", "no_tab_order",
-                            "Not yet implemented - Sandra"))
+
+    try:
+        acroform_fields = (
+            _get_doc(doc_json)
+            .get("interactivity", {})
+            .get("acroform_fields", [])
+        )
+        page_indices = {f["page_index"] for f in acroform_fields if f.get("page_index") is not None}
+
+        if not page_indices:
+            results.append(_skipped("2.1.1", "no_tab_order", "No form fields found on any page"))
+            return results
+
+        for page_index in sorted(page_indices):
+            if page_index < len(pdf.pages):
+                pdf.pages[page_index]["/Tabs"] = pikepdf.Name("/S")
+
+        results.append(_fixed(
+            "2.1.1",
+            "no_tab_order",
+            f"Set /Tabs /S on {len(page_indices)} page(s): {sorted(page_indices)}"
+        ))
+    except Exception as exc:
+        results.append(_skipped("2.1.1", "no_tab_order", f"Error: {exc}"))
+
     return results
 
 
