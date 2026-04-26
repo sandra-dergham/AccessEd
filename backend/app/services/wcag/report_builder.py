@@ -201,9 +201,6 @@ def add_overview(pdf: FPDF, meta: dict):
     left = pdf.l_margin
     y = pdf.get_y()
 
-    pdf.set_fill_color(248, 250, 252)
-    pdf.set_draw_color(226, 232, 240)
-
     pdf.set_xy(left + 5, y + 4)
     pdf.set_font("Helvetica", "B", 10)
     pdf.set_text_color(71, 85, 105)
