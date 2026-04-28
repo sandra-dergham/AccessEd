@@ -367,7 +367,7 @@ def fix_3_1_1_language(
 ) -> list[dict]:
     """
     WCAG 3.1.1 - language_of_page (severity: medium)
-    Owner: Hala | Method: Pure code — START WITH THIS FIRST
+    Method: Pure code 
 
     DATA AVAILABLE:
       doc_json["document"]["inferred_language"]
@@ -394,9 +394,10 @@ def fix_3_1_1_language(
         results.append(_skipped("3.1.1", "language_of_page",
                                 "inferred_language not available"))
         return results
-    # TODO Hala: write pdf.Root["/Lang"] = pikepdf.String(lang) here
-    results.append(_skipped("3.1.1", "language_of_page",
-                            "Not yet implemented - Hala"))
+    pdf.Root["/Lang"] = pikepdf.String(lang)
+    results.append(_fixed("3.1.1", "language_of_page",
+                      f"Set document language to '{lang}'"))
+
     return results
 
 
@@ -408,7 +409,7 @@ def fix_2_4_2_title(
 ) -> list[dict]:
     """
     WCAG 2.4.2 - page_titled (severity: medium)
-    Owner: Hala | Method: Pure code
+    Method: Pure code
 
     DATA AVAILABLE:
       doc_json["document"]["heading_candidates"]
@@ -430,16 +431,43 @@ def fix_2_4_2_title(
       6. Write: pdf.docinfo["/Title"] = pikepdf.String(title)
       7. Return _fixed(...) on success
     """
-    # Hala implements here
     results = []
     targets = _filter_issues(issues, "2.4.2", "page_titled")
     if not targets:
         return results
-    # TODO Hala: derive title and write pdf.docinfo["/Title"] here
-    results.append(_skipped("2.4.2", "page_titled",
-                            "Not yet implemented - Hala"))
-    return results
 
+    # Step 1 — build span lookup
+    span_lookup = _build_span_lookup(doc_json)
+
+    # Step 2 — try heading candidates first
+    title = None
+    heading_candidates = _get_doc(doc_json).get("heading_candidates", [])
+
+    if heading_candidates:
+        span = span_lookup.get(heading_candidates[0])
+        if span:
+            title = span.get("text", "").strip()
+
+    # Step 3 — fallback to first non-empty text span
+    if not title:
+        for span in _get_doc(doc_json).get("text_spans", []):
+            text = span.get("text", "").strip()
+            if text:
+                title = text
+                break
+
+    # Step 4 — nothing found at all
+    if not title:
+        results.append(_skipped("2.4.2", "page_titled",
+                                "Could not derive title from document content"))
+        return results
+
+    # Step 5 — truncate and write
+    title = title[:80]
+    pdf.docinfo["/Title"] = pikepdf.String(title)
+    results.append(_fixed("2.4.2", "page_titled",
+                          f"Set document title to '{title}'"))
+    return results
 
 def fix_2_4_1_and_2_4_5_bookmarks(
     pdf: pikepdf.Pdf,
@@ -449,49 +477,89 @@ def fix_2_4_1_and_2_4_5_bookmarks(
 ) -> list[dict]:
     """
     WCAG 2.4.1 / 2.4.5 - bypass_blocks / multiple_ways
-    Owner: Hala | Method: Pure code
-
-    DATA AVAILABLE:
-      doc_json["document"]["heading_candidates"]
-        -> list of span IDs in document order
-
-      doc_json["document"]["text_spans"]
-        each span: id, text, page_index, font["size"]
-        -> use font size to infer level: largest font = H1, next = H2
-
-    FIX STEPS:
-      1. Check at least one of 2.4.1 or 2.4.5 issues exists
-      2. span_lookup = _build_span_lookup(doc_json)
-      3. For each heading_candidate ID:
-           span = span_lookup[id]
-           record (text, page_index, font_size)
-      4. Sort unique font sizes desc -> assign levels (largest=1, next=2...)
-      5. Build pikepdf /Outlines structure:
-           root = pikepdf.Dictionary(Count=pikepdf.Integer(n))
-           each item = pikepdf.Dictionary(
-               Title=pikepdf.String(text),
-               Dest=pikepdf.Array([pdf.pages[page_index].obj, pikepdf.Name("/Fit")]),
-               Count=pikepdf.Integer(0),
-           )
-           chain items with /Next and /Prev
-           set /First and /Last on root
-      6. pdf.Root["/Outlines"] = pdf.make_indirect(root)
-      7. Return _fixed(...) - fixes both 2.4.1 and 2.4.5 at once
-
-    NOTE: Most complex pure-code fix. Budget 2 days.
+    Method: Pure code
+    ...
     """
-    # Hala implements here
     results = []
     has_241 = bool(_filter_issues(issues, "2.4.1"))
     has_245 = bool(_filter_issues(issues, "2.4.5"))
     if not has_241 and not has_245:
         return results
-    # TODO Hala: build and write /Outlines here
-    for criterion in (["2.4.1"] if has_241 else []) + (["2.4.5"] if has_245 else []):
-        results.append(_skipped(criterion, "bypass_blocks_multiple_ways",
-                                "Not yet implemented - Hala"))
-    return results
 
+    # Step 1 — build span lookup
+    span_lookup = _build_span_lookup(doc_json)
+    heading_candidates = _get_doc(doc_json).get("heading_candidates", [])
+
+    if not heading_candidates:
+        for criterion in (["2.4.1"] if has_241 else []) + (["2.4.5"] if has_245 else []):
+            results.append(_skipped(criterion, "bypass_blocks_multiple_ways",
+                                    "No heading candidates found to build bookmarks"))
+        return results
+
+    # Step 2 — collect headings with text, page, font size
+    headings = []
+    for hid in heading_candidates:
+        span = span_lookup.get(hid)
+        if not span:
+            continue
+        text = span.get("text", "").strip()
+        if not text:
+            continue
+        page_index = span.get("page_index", 0)
+        font_size  = span.get("font", {}).get("size", 12)
+        headings.append({
+            "text":       text,
+            "page_index": page_index,
+            "font_size":  font_size,
+        })
+
+    if not headings:
+        for criterion in (["2.4.1"] if has_241 else []) + (["2.4.5"] if has_245 else []):
+            results.append(_skipped(criterion, "bypass_blocks_multiple_ways",
+                                    "Heading candidates had no usable text"))
+        return results
+
+    # Step 3 — infer heading levels from font size
+    # largest font = level 1, next unique size = level 2, etc.
+    unique_sizes = sorted(set(h["font_size"] for h in headings), reverse=True)
+    size_to_level = {size: (i + 1) for i, size in enumerate(unique_sizes)}
+    for h in headings:
+        h["level"] = size_to_level[h["font_size"]]
+
+    # Step 4 — build pikepdf outline items
+    # each item needs to be an indirect object so we can reference it
+    items = []
+    for h in headings:
+        page_ref = pdf.pages[h["page_index"]].obj
+        item = pdf.make_indirect(pikepdf.Dictionary(
+            Title=pikepdf.String(h["text"]),
+            Dest=pikepdf.Array([page_ref, pikepdf.Name("/Fit")]),
+            Count=pikepdf.Integer(0),
+        ))
+        items.append(item)
+
+    # Step 5 — chain items with /Next and /Prev
+    for i, item in enumerate(items):
+        if i > 0:
+            item["/Prev"] = items[i - 1]
+        if i < len(items) - 1:
+            item["/Next"] = items[i + 1]
+
+    # Step 6 — build root /Outlines dictionary
+    outline_root = pdf.make_indirect(pikepdf.Dictionary(
+        Count=pikepdf.Integer(len(items)),
+        First=items[0],
+        Last=items[-1],
+    ))
+
+    # Step 7 — write to PDF
+    pdf.Root["/Outlines"] = outline_root
+
+    # Step 8 — report success for whichever criteria fired
+    for criterion in (["2.4.1"] if has_241 else []) + (["2.4.5"] if has_245 else []):
+        results.append(_fixed(criterion, "bypass_blocks_multiple_ways",
+                              f"Added {len(items)} bookmarks from heading candidates"))
+    return results
 
 def fix_2_4_4_link_purpose(
     pdf: pikepdf.Pdf,
@@ -501,47 +569,143 @@ def fix_2_4_4_link_purpose(
 ) -> list[dict]:
     """
     WCAG 2.4.4 - link_purpose (severity: medium)
-    Owner: Hala | Method: Pure code (cases A+B) + GPT-4o (case C)
-
-    DATA AVAILABLE:
-      issue["location"]["link_id"]  -> link ID e.g. "link_p0_3"
-      issue["location"]["page"]     -> page index
-
-      doc_json["document"]["links"]
-        each link: id, uri, bbox [x0,y0,x1,y1], type ("uri"/"internal")
-
-      Surrounding context: text_spans on same page near link["bbox"]
-
-    THREE CASES:
-      A - raw URL as link text e.g. "https://example.com/report.pdf"
-          Fix: strip scheme, clean -> no GPT needed
-
-      B - vague text + readable URL path e.g. uri ends in "/2024-report.pdf"
-          Fix: extract last path segment, clean -> no GPT needed
-
-      C - vague text + opaque URL e.g. "https://t.co/xK3p"
-          Fix: call GPT-4o
-          Prompt: "Link text: '{link_text}'. URL: '{uri}'.
-                   Context: '{surrounding_text}'.
-                   Write a descriptive label max 60 chars.
-                   Return ONLY the label."
-
-    WRITE FIX:
-      Find the PDF link annotation on page by matching bbox:
-        for annot in pdf.pages[page_index].get("/Annots", []):
-            obj = annot.get_object()
-            if obj.get("/Subtype") == "/Link":
-                if rect matches link["bbox"]:
-                    obj["/Contents"] = pikepdf.String(label)
+    Method: Pure code (cases A+B) + GPT-4o (case C)
     """
-    # Hala implements here
+    import urllib.parse
+
     results = []
     targets = _filter_issues(issues, "2.4.4", "link_purpose")
-    for iss in targets:
-        results.append(_skipped("2.4.4", iss.get("issue", ""),
-                                "Not yet implemented - Hala"))
-    return results
+    if not targets:
+        return results
 
+    # Build link lookup from doc_json
+    links = _get_doc(doc_json).get("links", [])
+    link_lookup = {lnk["id"]: lnk for lnk in links if lnk.get("id")}
+
+    # Build span lookup for surrounding text context
+    span_lookup = _build_span_lookup(doc_json)
+
+    for iss in targets:
+        location   = iss.get("location", {})
+        link_id    = location.get("link_id")
+        page_index = location.get("page", 0)
+
+        # Step 1 — find the link in doc_json
+        link = link_lookup.get(link_id)
+        if not link:
+            results.append(_skipped("2.4.4", link_id or "unknown",
+                                    "Link not found in doc_json"))
+            continue
+
+        uri       = link.get("uri", "") or ""
+        bbox      = link.get("bbox", [])
+        link_text = link.get("text", "") or ""
+
+        if not uri:
+            results.append(_skipped("2.4.4", link_id,
+                                    "Link has no URI — internal link, skipping"))
+            continue
+
+        # Step 2 — determine case and generate label
+        label = None
+
+        # Case A — link text is a raw URL, clean it up
+        if uri.lower() in link_text.lower() or link_text.startswith("http"):
+            clean = uri.replace("https://", "").replace("http://", "")
+            clean = clean.rstrip("/")
+            label = clean[:60]
+
+        # Case B — vague text but URL has a readable path segment
+        if not label:
+            parsed = urllib.parse.urlparse(uri)
+            path   = parsed.path.rstrip("/")
+            if path and path != "/":
+                segment = path.split("/")[-1]
+                # remove file extension
+                segment = segment.rsplit(".", 1)[0] if "." in segment else segment
+                # clean underscores/hyphens
+                segment = segment.replace("-", " ").replace("_", " ").strip()
+                if len(segment) > 3:  # meaningful segment
+                    label = segment.title()[:60]
+
+        # Case C — opaque URL, use GPT-4o
+        if not label:
+            try:
+                import httpx, base64
+
+                # collect surrounding text as context
+                context_spans = [
+                    s.get("text", "") for s in
+                    _get_doc(doc_json).get("text_spans", [])
+                    if s.get("page_index") == page_index
+                ]
+                context = " ".join(context_spans)[:300]
+
+                prompt = (
+                    f"A PDF link has vague text: \"{link_text}\". "
+                    f"The link URL is: {uri}. "
+                    f"Surrounding text: {context}. "
+                    f"Write a short descriptive label (max 60 characters) "
+                    f"that clearly describes where this link goes. "
+                    f"Return ONLY the label. No explanation."
+                )
+
+                response = httpx.post(
+                    "https://api.openai.com/v1/chat/completions",
+                    headers={
+                        "Authorization": f"Bearer {_get_openai_key()}",
+                        "Content-Type": "application/json",
+                    },
+                    json={
+                        "model": "gpt-4o",
+                        "max_tokens": 80,
+                        "messages": [{"role": "user", "content": prompt}],
+                    },
+                    timeout=30,
+                )
+                label = response.json()["choices"][0]["message"]["content"].strip()
+                label = label[:60]
+            except Exception as exc:
+                logger.warning("GPT-4o failed for link %s: %s", link_id, exc)
+                results.append(_skipped("2.4.4", link_id,
+                                        f"GPT-4o call failed: {exc}"))
+                continue
+
+        if not label:
+            results.append(_skipped("2.4.4", link_id,
+                                    "Could not generate a label"))
+            continue
+
+        # Step 3 — write label as /Contents on the link annotation in the PDF
+        try:
+            page_obj = pdf.pages[page_index]
+            annots   = page_obj.get("/Annots", [])
+            written  = False
+
+            for annot_ref in annots:
+                annot = annot_ref.get_object()
+                if str(annot.get("/Subtype", "")) != "/Link":
+                    continue
+                rect = annot.get("/Rect")
+                if rect and bbox:
+                    # match annotation by bbox proximity
+                    r = [float(x) for x in rect]
+                    if (abs(r[0] - bbox[0]) < 5 and abs(r[1] - bbox[1]) < 5):
+                        annot["/Contents"] = pikepdf.String(label)
+                        written = True
+                        break
+
+            if written:
+                results.append(_fixed("2.4.4", link_id,
+                                      f"Set link label to '{label}'"))
+            else:
+                results.append(_skipped("2.4.4", link_id,
+                                        "Could not match annotation by bbox"))
+        except Exception as exc:
+            results.append(_skipped("2.4.4", link_id,
+                                    f"Failed to write to PDF: {exc}"))
+
+    return results
 
 # ═══════════════════════════════════════════════════════════════
 # BATCH 3 FIXES — Sandra
