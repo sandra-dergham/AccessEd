@@ -52,7 +52,9 @@ import re
 import shutil
 from typing import Any
 
+from matplotlib import widgets
 import pikepdf
+from .wcag.helper_function_b1 import contrast_ratio,_find_accessible_color
 
 logger = logging.getLogger(__name__)
 
@@ -179,53 +181,278 @@ def fix_1_1_1_image_alt_text(
     original_pdf_path: str,
 ) -> list[dict]:
     """
-    WCAG 1.1.1 - image_missing_text_alternative (severity: high)
+    WCAG 1.1.1 - image_missing_text_alternative
     Owner: Jana | Method: GPT-4o vision
-
-    DATA AVAILABLE:
-      issue["location"]["image_id"]  -> ID of the image occurrence
-      issue["location"]["page"]      -> page index (0-based)
-
-      doc_json["document"]["images"]["occurrences"]
-        each occ has:
-          occ["id"]               matches image_id
-          occ["asset_id"]         use to extract image bytes
-          occ["bbox"]             [x0, y0, x1, y1]
-          occ["struct_figure_id"] ID of the Figure node (may be None)
-
-      Image bytes: re-open original_pdf_path with fitz
-        import fitz
-        doc = fitz.open(original_pdf_path)
-        page = doc.load_page(page_index)
-        for img in page.get_image_list(full=True):
-            xref = img[0]
-            base_image = doc.extract_image(xref)
-            img_bytes = base_image["image"]
-
-      Surrounding text: filter text_spans on same page near occ["bbox"]
-
-    FIX STEPS:
-      1. Loop over filtered issues
-      2. Find image occurrence by image_id in doc_json["document"]["images"]["occurrences"]
-      3. Extract image bytes using fitz
-      4. Collect nearby text_spans as context string
-      5. Base64-encode -> call GPT-4o vision API
-         Prompt: "Describe this image in one concise sentence (max 125 characters)
-                  suitable as alt text for a PDF. Context: {nearby_text}.
-                  Return ONLY the alt text. No explanation. No quotes."
-      6. Validate response (not empty, not "I cannot", <= 200 chars)
-      7. Find Figure node by struct_figure_id -> write node["/Alt"] via pikepdf
-         If no struct_figure_id: create a new Figure tag
-      8. Return _fixed(...) on success, _skipped(...) on failure
     """
-    # Jana implements here
-    results = []
-    targets = _filter_issues(issues, "1.1.1", "image_missing_text_alternative")
-    for iss in targets:
-        results.append(_skipped("1.1.1", iss.get("issue", ""),
-                                "Not yet implemented - Jana"))
-    return results
+    import base64
+    import logging
+    import fitz
+    from app.services.openai_client import get_openai_client
 
+    logger = logging.getLogger(__name__)
+
+    results = []
+    issue_key = "image_missing_text_alternative"
+    targets = _filter_issues(issues, "1.1.1", issue_key)
+
+    if not targets:
+        return results
+
+    doc_data = _get_doc(doc_json)
+
+    occurrences = (
+        doc_data.get("images", {}).get("occurrences", [])
+        or doc_data.get("image_occurrences", [])
+        or []
+    )
+
+    text_spans = doc_data.get("text_spans", [])
+
+    occ_by_id = {occ.get("id"): occ for occ in occurrences if occ.get("id")}
+
+    try:
+        fitz_doc = fitz.open(original_pdf_path)
+    except Exception as exc:
+        for iss in targets:
+            results.append(_skipped("1.1.1", issue_key, f"Could not open PDF: {exc}"))
+        return results
+
+    try:
+        client = get_openai_client()
+    except Exception as exc:
+        fitz_doc.close()
+        for iss in targets:
+            results.append(_skipped("1.1.1", issue_key, f"OpenAI client unavailable: {exc}"))
+        return results
+
+    def _bbox_center(bbox: list[float]) -> tuple[float, float]:
+        return ((bbox[0] + bbox[2]) / 2, (bbox[1] + bbox[3]) / 2)
+
+    def _extract_image_bytes(page_index: int, occ_bbox: list[float]) -> bytes | None:
+        """
+        Finds the image on the page whose visual rectangle overlaps the occurrence bbox.
+        """
+        try:
+            page = fitz_doc.load_page(page_index)
+            target_rect = fitz.Rect(occ_bbox)
+
+            best_xref = None
+            best_overlap = 0
+
+            for img in page.get_images(full=True):
+                xref = img[0]
+                rects = page.get_image_rects(xref)
+
+                for rect in rects:
+                    overlap = rect & target_rect
+                    overlap_area = overlap.get_area() if not overlap.is_empty else 0
+
+                    if overlap_area > best_overlap:
+                        best_overlap = overlap_area
+                        best_xref = xref
+
+            if best_xref is None:
+                return None
+
+            base_image = fitz_doc.extract_image(best_xref)
+            return base_image.get("image")
+
+        except Exception as exc:
+            logger.debug("_extract_image_bytes failed: %s", exc)
+            return None
+
+    def _nearby_text(page_index: int, bbox: list[float]) -> str:
+        """
+        Collects text close to the image bbox for better AI context.
+        """
+        if not bbox:
+            return ""
+
+        x0, y0, x1, y1 = bbox
+        expanded = fitz.Rect(x0 - 80, y0 - 80, x1 + 80, y1 + 80)
+
+        nearby = []
+
+        for span in text_spans:
+            if span.get("page_index") != page_index:
+                continue
+
+            span_bbox = span.get("bbox")
+            text = span.get("text", "").strip()
+
+            if not span_bbox or not text:
+                continue
+
+            span_rect = fitz.Rect(span_bbox)
+
+            if expanded.intersects(span_rect):
+                nearby.append(text)
+
+        return " ".join(nearby)[:500]
+
+    def _iter_struct_elems(obj):
+        """
+        Recursively walks the structure tree.
+        """
+        try:
+            if isinstance(obj, pikepdf.Dictionary):
+                if obj.get("/Type") == pikepdf.Name("/StructElem"):
+                    yield obj
+
+                kids = obj.get("/K")
+                if kids is not None:
+                    yield from _iter_struct_elems(kids)
+
+            elif isinstance(obj, pikepdf.Array):
+                for item in obj:
+                    yield from _iter_struct_elems(item)
+
+        except Exception:
+            return
+
+    def _find_figure_node(struct_figure_id: str):
+        """
+        Finds a Figure structure node using /ID.
+        """
+        try:
+            root = pdf.Root.get("/StructTreeRoot")
+            if root is None:
+                return None
+
+            for elem in _iter_struct_elems(root):
+                if elem.get("/S") == pikepdf.Name("/Figure"):
+                    elem_id = elem.get("/ID")
+                    if elem_id is not None and str(elem_id) == struct_figure_id:
+                        return elem
+
+        except Exception as exc:
+            logger.debug("_find_figure_node failed: %s", exc)
+
+        return None
+
+    def _ask_ai_for_alt_text(img_bytes: bytes, nearby_text: str) -> str | None:
+        try:
+            b64_image = base64.b64encode(img_bytes).decode("utf-8")
+
+            prompt = (
+                "Describe this image in one concise sentence suitable as alt text "
+                "for a PDF. Maximum 125 characters. "
+                f"Nearby page context: {nearby_text or 'No nearby text available.'} "
+                "Return ONLY the alt text. No explanation. No quotes."
+            )
+
+            response = client.chat.completions.create(
+                model="gpt-4o",
+                temperature=0,
+                max_tokens=60,
+                messages=[
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "image_url",
+                                "image_url": {
+                                    "url": f"data:image/png;base64,{b64_image}",
+                                    "detail": "low",
+                                },
+                            },
+                            {"type": "text", "text": prompt},
+                        ],
+                    }
+                ],
+            )
+
+            alt_text = response.choices[0].message.content.strip().strip('"').strip("'")
+
+            bad_phrases = [
+                "i cannot",
+                "i can't",
+                "sorry",
+                "unable to",
+                "cannot determine",
+            ]
+
+            if not alt_text:
+                return None
+
+            if len(alt_text) > 200:
+                return None
+
+            if "\n" in alt_text:
+                return None
+
+            if any(phrase in alt_text.lower() for phrase in bad_phrases):
+                return None
+
+            return alt_text
+
+        except Exception as exc:
+            logger.warning("AI alt text generation failed: %s", exc)
+            return None
+
+    for iss in targets:
+        try:
+            loc = iss.get("location", {})
+            image_id = loc.get("image_id")
+            page_index = loc.get("page", loc.get("page_index"))
+
+            occ = occ_by_id.get(image_id)
+
+            if occ is None:
+                results.append(_skipped("1.1.1", issue_key, f"Image occurrence '{image_id}' not found"))
+                continue
+
+            if page_index is None:
+                page_index = occ.get("page_index", occ.get("page"))
+
+            bbox = occ.get("bbox")
+            struct_figure_id = occ.get("struct_figure_id")
+
+            if page_index is None or not bbox:
+                results.append(_skipped("1.1.1", issue_key, "Missing page index or bbox"))
+                continue
+
+            img_bytes = _extract_image_bytes(page_index, bbox)
+
+            if not img_bytes:
+                results.append(_skipped("1.1.1", issue_key, "Could not extract image bytes"))
+                continue
+
+            nearby = _nearby_text(page_index, bbox)
+
+            alt_text = _ask_ai_for_alt_text(img_bytes, nearby)
+
+            if not alt_text:
+                results.append(_skipped("1.1.1", issue_key, "AI could not generate usable alt text"))
+                continue
+
+            if not struct_figure_id:
+                results.append(_skipped(
+                    "1.1.1",
+                    issue_key,
+                    "No linked Figure structure node found; creating new tags should be handled separately"
+                ))
+                continue
+
+            figure_node = _find_figure_node(struct_figure_id)
+
+            if figure_node is None:
+                results.append(_skipped("1.1.1", issue_key, f"Figure node '{struct_figure_id}' not found"))
+                continue
+
+            figure_node["/Alt"] = pikepdf.String(alt_text)
+
+            results.append(_fixed(
+                "1.1.1",
+                issue_key,
+                f"Set image /Alt='{alt_text}' via GPT-4o vision"
+            ))
+
+        except Exception as exc:
+            results.append(_skipped("1.1.1", issue_key, f"Error: {exc}"))
+
+    fitz_doc.close()
+    return results
 
 def fix_1_1_1_control_name(
     pdf: pikepdf.Pdf,
@@ -233,38 +460,128 @@ def fix_1_1_1_control_name(
     doc_json: dict,
     original_pdf_path: str,
 ) -> list[dict]:
-    """
-    WCAG 1.1.1 - control_missing_name (severity: high)
-    Owner: Jana | Method: Pure code
+    import base64
+    import fitz
+    from app.services.openai_client import get_openai_client
 
-    DATA AVAILABLE:
-      issue["location"]["widget_id"]  -> widget ID e.g. "widget_0"
-      issue["location"]["page"]       -> page index
-
-      doc_json["document"]["widgets"]
-        each widget has:
-          widget["id"]         matches location["widget_id"]
-          widget["field_name"] the /T field name string <- clean this
-
-      doc_json["document"]["interactivity"]["acroform_fields"]
-        each field has: id, name (/T), tooltip (/TU=None=problem), page_index
-
-    FIX STEPS:
-      1. Get widget_id from location
-      2. Find widget in doc_json["document"]["widgets"] by id
-      3. Get widget["field_name"] -> this is the /T string
-      4. If None or empty -> _skipped
-      5. Clean it: _clean_field_name(field_name)
-      6. field_obj = _find_acroform_field(pdf, widget["field_name"])
-      7. Write: field_obj["/TU"] = pikepdf.String(clean_name)
-      8. Return _fixed(...) on success
-    """
-    # Jana implements here
     results = []
     targets = _filter_issues(issues, "1.1.1", "control_missing_name")
+    if not targets:
+        return results
+
+    doc_data = _get_doc(doc_json)
+    widgets  = doc_data.get("widgets", [])
+    widget_by_id = {w["id"]: w for w in widgets if w.get("id")}
+
+    try:
+        fitz_doc = fitz.open(original_pdf_path)
+    except Exception as exc:
+        for iss in targets:
+            results.append(_skipped("1.1.1", "control_missing_name", f"Could not open PDF: {exc}"))
+        return results
+    # get OpenAI client
+    try:
+        client = get_openai_client()
+    except RuntimeError as exc:
+        for iss in targets:
+            results.append(_skipped("1.1.1", "control_missing_name", str(exc)))
+        fitz_doc.close()
+        return results
+
+    def _screenshot_around_widget(page_index: int, bbox: list) -> bytes | None:
+        """Render a small region around the widget so GPT-4o can see its visual context."""
+        try:
+            page = fitz_doc.load_page(page_index)
+            if bbox:
+                x0, y0, x1, y1 = bbox
+                # expand region a bit so nearby label text is visible
+                clip = fitz.Rect(x0 - 60, y0 - 40, x1 + 60, y1 + 40)
+            else:
+                clip = page.rect
+
+            pix = page.get_pixmap(clip=clip, dpi=100)
+            return pix.tobytes("png")
+        except Exception as exc:
+            logger.debug("_screenshot_around_widget: %s", exc)
+            return None
+
     for iss in targets:
-        results.append(_skipped("1.1.1", iss.get("issue", ""),
-                                "Not yet implemented - Jana"))
+        issue_key = "control_missing_name"
+        try:
+            loc       = iss.get("location", {})
+            widget_id = loc.get("widget_id")
+
+            # ── find widget ──────────────────────────────────────────────
+            widget = widget_by_id.get(widget_id)
+            if widget is None:
+                results.append(_skipped("1.1.1", issue_key, f"Widget '{widget_id}' not found"))
+                continue
+
+            # ── find field in PDF ────────────────────────────────────────
+            field_name = widget.get("field_name")
+            field_obj  = _find_acroform_field(pdf, field_name) if field_name else None
+            if field_obj is None:
+                results.append(_skipped("1.1.1", issue_key, "Field not found in PDF"))
+                continue
+
+            # ── screenshot around the widget for visual context ──────────
+            page_index = widget.get("page_index")
+            bbox       = widget.get("bbox")
+            img_bytes  = _screenshot_around_widget(page_index, bbox)
+
+            if not img_bytes:
+                results.append(_skipped("1.1.1", issue_key, "Could not render widget region"))
+                continue
+
+            # ── call GPT-4o vision ───────────────────────────────────────
+            b64_image   = base64.standard_b64encode(img_bytes).decode("utf-8")
+            field_type  = widget.get("field_type") or "text field"
+            field_name_hint = field_name or "unknown"
+
+            prompt = (
+                f"This is a cropped region of a PDF form. "
+                f"There is a form field ({field_type}) with internal name '{field_name_hint}'. "
+                f"Look at the visible label text near the field and suggest a short, clear, "
+                f"human-readable accessible name for it (max 60 characters). "
+                f"Examples: 'First Name', 'Email Address', 'Date of Birth'. "
+                f"Return ONLY the accessible name. No explanation. No quotes."
+            )
+
+            response = client.chat.completions.create(
+                model="gpt-4o",
+                max_tokens=30,
+                messages=[{
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "image_url",
+                            "image_url": {
+                                "url": f"data:image/png;base64,{b64_image}",
+                                "detail": "low",
+                            },
+                        },
+                        {"type": "text", "text": prompt},
+                    ],
+                }],
+            )
+
+            accessible_name = response.choices[0].message.content.strip()
+
+            # ── validate response ────────────────────────────────────────
+            if not accessible_name or len(accessible_name) > 100 or "\n" in accessible_name:
+                results.append(_skipped("1.1.1", issue_key,
+                                        f"GPT-4o returned unusable name: '{accessible_name}'"))
+                continue
+
+            # ── write /TU into the PDF ───────────────────────────────────
+            field_obj["/TU"] = pikepdf.String(accessible_name)
+            results.append(_fixed("1.1.1", issue_key,
+                                  f"Set /TU='{accessible_name}' via GPT-4o vision"))
+
+        except Exception as exc:
+            results.append(_skipped("1.1.1", issue_key, f"Error: {exc}"))
+
+    fitz_doc.close()
     return results
 
 
@@ -274,44 +591,373 @@ def fix_1_4_3_contrast(
     doc_json: dict,
     original_pdf_path: str,
 ) -> list[dict]:
-    """
-    WCAG 1.4.3 - insufficient_text_contrast (severity: high)
-    Owner: Jana | Method: Pure code (math)
-
-    DATA AVAILABLE:
-      issue["location"]["span_id"]        -> ID of the text span
-      issue["location"]["contrast_ratio"] -> current ratio e.g. 2.1
-
-      Find span by span_id using _build_span_lookup(doc_json):
-        span["color"]["fill_rgb"]               -> [R,G,B] foreground
-        span["background_estimate"]["bg_rgb"]   -> [R,G,B] background
-        span["contrast"]["large_text_assumed"]  -> True/False
-          True  -> target ratio = 3.0
-          False -> target ratio = 4.5
-        span["bbox"]       -> [x0, y0, x1, y1]
-        span["page_index"] -> page number
-
-    FIX STEPS:
-      1. Look up span by span_id using _build_span_lookup(doc_json)
-      2. Get fg_rgb, bg_rgb, large_text_assumed
-      3. Set target = 3.0 if large_text_assumed else 4.5
-      4. Compute new fg color: adjust luminance until contrast passes
-         (darken if fg is light relative to bg, lighten if fg is dark)
-      5. Find span in PDF page content stream by page_index + bbox
-      6. Replace color operator (rg/RG) with new RGB values
-      7. Return _fixed(...) on success
-
-    NOTE: Step 5-6 (content stream editing) is the hardest part.
-    Budget 2 full days. If time is short, use _flagged instead.
-    """
-    # Jana implements here
     results = []
-    targets = _filter_issues(issues, "1.4.3", "insufficient_text_contrast")
+    issue_key = "insufficient_text_contrast"
+    targets = _filter_issues(issues, "1.4.3", issue_key)
+    if not targets:
+        return results
+
+    span_lookup = _build_span_lookup(doc_json)
+
+
     for iss in targets:
-        results.append(_skipped("1.4.3", iss.get("issue", ""),
-                                "Not yet implemented - Jana"))
+        try:
+            loc     = iss.get("location", {})
+            span_id = loc.get("span_id")
+            span    = span_lookup.get(span_id)
+
+            if span is None:
+                results.append(_skipped("1.4.3", issue_key, f"Span '{span_id}' not found"))
+                continue
+
+            fg_rgb = span.get("color", {}).get("fill_rgb") or span.get("fill_rgb")
+            bg_rgb = span.get("background_estimate", {}).get("bg_rgb") or span.get("bg_rgb")
+            large_text = span.get("contrast", {}).get("large_text_assumed", False)
+
+            if not fg_rgb or not bg_rgb:
+                results.append(_skipped("1.4.3", issue_key, "Missing fg or bg RGB"))
+                continue
+
+            target_ratio  = 3.0 if large_text else 4.5
+            current_ratio = contrast_ratio(fg_rgb, bg_rgb)
+
+            if current_ratio >= target_ratio:
+                results.append(_fixed("1.4.3", issue_key, f"Already passes: {current_ratio:.2f}:1"))
+                continue
+
+            new_fg_rgb = _find_accessible_color(fg_rgb, bg_rgb, target_ratio)
+            if new_fg_rgb is None:
+                results.append(_skipped("1.4.3", issue_key, "Could not compute accessible color"))
+                continue
+
+            # ── attempt content stream edit ──────────────────────────────
+            page_index = span.get("page_index")
+            success    = _try_recolor_in_stream(pdf, page_index, fg_rgb, new_fg_rgb)
+
+            new_ratio = contrast_ratio(new_fg_rgb, bg_rgb)
+
+            if success:
+                results.append(_fixed(
+                    "1.4.3", issue_key,
+                    f"Recolored span '{span_id}': RGB {fg_rgb} → {new_fg_rgb} "
+                    f"({current_ratio:.2f}:1 → {new_ratio:.2f}:1)"
+                ))
+            else:
+                results.append(_flagged(
+                    "1.4.3", issue_key,
+                    f"Could not recolor automatically. "
+                    f"Manually change RGB {fg_rgb} → {new_fg_rgb} "
+                    f"({current_ratio:.2f}:1 → {new_ratio:.2f}:1)"
+                ))
+
+        except Exception as exc:
+            results.append(_skipped("1.4.3", issue_key, f"Error: {exc}"))
+
     return results
 
+
+def _try_recolor_in_stream(
+    pdf: pikepdf.Pdf,
+    page_index: int,
+    old_rgb: list[int],
+    new_rgb: list[int],
+) -> bool:
+    """
+    Try to replace the detected old text fill color in the page content stream.
+
+    General rule:
+    - Uses old_rgb from the detector, not hardcoded demo colors.
+    - Replaces only non-stroking RGB text/color operator: rg
+    - Only edits if exactly one safe match is found.
+    - Otherwise returns False so the issue is flagged/manual.
+    """
+    try:
+        import re
+        import zlib
+
+        page = pdf.pages[page_index]
+        contents = page.get("/Contents")
+
+        if contents is None:
+            return False
+
+        def to_pdf_float(v: int) -> float:
+            return round(v / 255.0, 4)
+
+        old_vals = [to_pdf_float(v) for v in old_rgb]
+        new_vals = [to_pdf_float(v) for v in new_rgb]
+
+        new_op = (
+            f"{new_vals[0]:.4f} {new_vals[1]:.4f} {new_vals[2]:.4f} rg"
+            .rstrip("0")
+            .encode()
+        )
+
+        # General numeric matcher:
+        # Finds: number number number rg
+        color_pattern = re.compile(
+            rb"(?P<r>[0-9]*\.?[0-9]+)\s+"
+            rb"(?P<g>[0-9]*\.?[0-9]+)\s+"
+            rb"(?P<b>[0-9]*\.?[0-9]+)\s+rg"
+        )
+
+        def close(a: float, b: float, tolerance: float = 0.01) -> bool:
+            return abs(a - b) <= tolerance
+
+        def read_stream(stream):
+            raw = stream.read_raw_bytes()
+
+            try:
+                data = zlib.decompress(raw)
+                return data, True
+            except Exception:
+                return raw, False
+
+        def write_stream(stream, data: bytes, was_compressed: bool):
+            if was_compressed:
+                stream.write(
+                    zlib.compress(data),
+                    filter=pikepdf.Name("/FlateDecode")
+                )
+            else:
+                stream.write(data)
+
+        def try_replace(stream) -> bool:
+            data, was_compressed = read_stream(stream)
+
+            matches = []
+
+            for match in color_pattern.finditer(data):
+                try:
+                    r = float(match.group("r"))
+                    g = float(match.group("g"))
+                    b = float(match.group("b"))
+                except Exception:
+                    continue
+
+                if (
+                    close(r, old_vals[0])
+                    and close(g, old_vals[1])
+                    and close(b, old_vals[2])
+                ):
+                    matches.append(match)
+
+            # Safety rule:
+            # If the same color appears multiple times, we don't know if all
+            # occurrences belong to the target span.
+            if len(matches) != 1:
+                return False
+
+            match = matches[0]
+
+            new_data = (
+                data[:match.start()]
+                + new_op
+                + data[match.end():]
+            )
+
+            write_stream(stream, new_data, was_compressed)
+            return True
+
+        if isinstance(contents, pikepdf.Stream):
+            return try_replace(contents)
+
+        if isinstance(contents, pikepdf.Array):
+            changed = False
+
+            for item in contents:
+                try:
+                    stream = item.get_object()
+                except Exception:
+                    stream = item
+
+                if not isinstance(stream, pikepdf.Stream):
+                    continue
+
+                if try_replace(stream):
+                    changed = True
+                    break
+
+            return changed
+
+        return False
+
+    except Exception as exc:
+        logger.debug("_try_recolor_in_stream failed: %s", exc)
+        return False
+
+def fix_1_4_1_color_only(
+    pdf: pikepdf.Pdf,
+    issues: list[dict],
+    doc_json: dict,
+    original_pdf_path: str,
+) -> list[dict]:
+    results = []
+
+    flag_map = {
+        "link_distinguished_by_color_only": (
+            "Add a non-color cue such as underlining to this link. "
+            "Cannot be applied automatically — requires visual content edit."
+        ),
+        "explicit_color_only_instruction": (
+            "Rewrite this instruction to not rely on color alone. "
+            "For example replace 'click the green button' with 'click the Submit button'. "
+            "Cannot be applied automatically — requires content rewrite."
+        ),
+        "required_field_indicated_by_color_only": (
+            "Add a visible non-color cue such as * or the word 'required' "
+            "next to this field label. Cannot be applied automatically — requires visual content edit."
+        ),
+        "repeated_identical_marker_or_label_distinguished_by_color_only": (
+            "Add a non-color distinction such as shape, pattern, or text label "
+            "to differentiate these items. Cannot be applied automatically — requires visual redesign."
+        ),
+    }
+
+    targets = _filter_issues(issues, "1.4.1")
+    for iss in targets:
+        issue_key = iss.get("issue", "")
+        message   = flag_map.get(issue_key)
+        if message:
+            results.append(_flagged("1.4.1", issue_key, message))
+
+    return results
+def fix_1_4_11_non_text_contrast(
+    pdf: pikepdf.Pdf,
+    issues: list[dict],
+    doc_json: dict,
+    original_pdf_path: str,
+) -> list[dict]:
+    """
+    WCAG 1.4.11 - Non-text Contrast
+    
+    Graphics  → cannot fix (content stream edit) → _flagged
+    Widgets   → fix via /MK /BC                  → _fixed
+    """
+    results = []
+
+    doc_data     = _get_doc(doc_json)
+    widgets      = doc_data.get("widgets", [])
+    widget_by_id = {w["id"]: w for w in widgets if w.get("id")}
+
+    
+    # ── graphics: flag only, cannot edit content stream ──────────────────
+
+    graphic_targets = _filter_issues(
+        issues, "1.4.11", "insufficient_non_text_contrast_graphic"
+    )
+    for iss in graphic_targets:
+        loc        = iss.get("location", {})
+        graphic_id = loc.get("graphic_id")
+        page       = loc.get("page")
+        results.append(_flagged(
+            "1.4.11",
+            "insufficient_non_text_contrast_graphic",
+            (
+                f"Graphic '{graphic_id}' on page {page} has insufficient non-text contrast. "
+                f"Manually increase the stroke or fill color contrast to at least 3:1. "
+                f"Cannot be fixed automatically — requires content stream edit."
+            )
+        ))
+
+    # ── widgets: fix via /MK /BC ─────────────────────────────────────────
+
+    widget_targets = _filter_issues(
+        issues, "1.4.11", "insufficient_non_text_contrast_ui_component"
+    )
+    for iss in widget_targets:
+        issue_key = "insufficient_non_text_contrast_ui_component"
+        loc       = iss.get("location", {})
+        widget_id = loc.get("widget_id")
+
+        try:
+            # ── find widget in doc_json ───────────────────────────────────
+            widget = widget_by_id.get(widget_id)
+            if widget is None:
+                results.append(_skipped(
+                    "1.4.11", issue_key,
+                    f"Widget '{widget_id}' not found in doc_json"
+                ))
+                continue
+
+            # ── get color data ────────────────────────────────────────────
+            ntc        = widget.get("non_text_contrast", {})
+            border_rgb = ntc.get("border_rgb")
+            bg_rgb     = ntc.get("adjacent_rgb")
+
+            if not border_rgb or not bg_rgb:
+                results.append(_skipped(
+                    "1.4.11", issue_key,
+                    f"Widget '{widget_id}' missing border_rgb or adjacent_rgb in non_text_contrast"
+                ))
+                continue
+
+            # ── compute passing color ─────────────────────────────────────
+            current_ratio  = contrast_ratio(border_rgb, bg_rgb)
+            new_border_rgb = _find_accessible_color(border_rgb, bg_rgb, target_ratio=3.0)
+
+            if new_border_rgb is None:
+                results.append(_skipped(
+                    "1.4.11", issue_key,
+                    f"Could not compute a passing border color for widget '{widget_id}'"
+                ))
+                continue
+
+            new_ratio = contrast_ratio(new_border_rgb, bg_rgb)
+
+            # ── find field in PDF ─────────────────────────────────────────
+            field_name = widget.get("field_name")
+            field_obj  = _find_acroform_field(pdf, field_name) if field_name else None
+
+            if field_obj is None:
+                results.append(_skipped(
+                    "1.4.11", issue_key,
+                    f"AcroForm field '{field_name}' not found in PDF"
+                ))
+                continue
+
+            # ── write /MK /BC (0-1 range, not 0-255) ─────────────────────
+            bc = [pikepdf.Real(round(v / 255, 4)) for v in new_border_rgb]
+
+            mk = field_obj.get("/MK")
+            if mk is None:
+                field_obj["/MK"] = pikepdf.Dictionary(
+                    BC=pikepdf.Array(bc)
+                )
+            elif isinstance(mk, pikepdf.Dictionary):
+                mk["/BC"] = pikepdf.Array(bc)
+                # force viewer redraw
+                if "/AP" in field_obj:
+                    del field_obj["/AP"]
+
+                acroform = pdf.Root.get("/AcroForm")
+                if acroform is not None:
+                    acroform["/NeedAppearances"] = True
+            else:
+                try:
+                    mk_obj = mk.get_object()
+                    mk_obj["/BC"] = pikepdf.Array(bc)
+                except Exception:
+                    field_obj["/MK"] = pikepdf.Dictionary(BC=pikepdf.Array(bc))
+
+            results.append(_fixed(
+                "1.4.11",
+                issue_key,
+                (
+                    f"Widget '{widget_id}': border color changed from RGB {border_rgb} "
+                    f"to RGB {new_border_rgb}. "
+                    f"Contrast improved from {current_ratio:.2f}:1 to {new_ratio:.2f}:1 "
+                    f"via /MK /BC."
+                )
+            ))
+
+        except Exception as exc:
+            results.append(_skipped(
+                "1.4.11", issue_key,
+                f"Error processing widget '{widget_id}': {exc}"
+            ))
+
+    return results
 
 def fix_2_5_3_label_in_name(
     pdf: pikepdf.Pdf,
@@ -320,40 +966,58 @@ def fix_2_5_3_label_in_name(
     original_pdf_path: str,
 ) -> list[dict]:
     """
-    WCAG 2.5.3 - label_not_in_name (severity: high)
+    WCAG 2.5.3 - label_not_in_name
     Owner: Jana | Method: Pure code
-
-    DATA AVAILABLE:
-      issue["location"]["field_id"]          -> field ID
-      issue["location"]["widget_id"]         -> widget ID
-      issue["location"]["visible_label"]     -> text user sees on screen <- USE THIS
-      issue["location"]["programmatic_name"] -> current wrong /TU or /T value
-
-      The visible_label is ALREADY in the issue. No lookup needed.
-
-      To find the field in pikepdf:
-        doc_json["document"]["interactivity"]["acroform_fields"]
-        -> find by field_id -> get field["name"] (the /T value)
-        -> _find_acroform_field(pdf, field["name"])
-
-    FIX STEPS:
-      1. Get visible_label from location["visible_label"]
-      2. If None or empty -> _skipped
-      3. Find field in acroform_fields by field_id -> get field["name"]
-      4. field_obj = _find_acroform_field(pdf, field["name"])
-      5. Write: field_obj["/TU"] = pikepdf.String(visible_label)
-         NOTE: write visible_label EXACTLY as-is. Do NOT clean or modify it.
-         The point is /TU must match what the user sees on screen.
-      6. Return _fixed(...) on success
     """
-    # Jana implements here
-    results = []
-    targets = _filter_issues(issues, "2.5.3", "label_not_in_name")
-    for iss in targets:
-        results.append(_skipped("2.5.3", iss.get("issue", ""),
-                                "Not yet implemented - Jana"))
-    return results
 
+    results = []
+    issue_key = "label_not_in_name"
+    targets = _filter_issues(issues, "2.5.3", issue_key)
+
+    acroform_fields = (
+        _get_doc(doc_json)
+        .get("interactivity", {})
+        .get("acroform_fields", [])
+    )
+
+    field_by_id = {f.get("id"): f for f in acroform_fields if f.get("id")}
+
+    for iss in targets:
+        loc = iss.get("location", {})
+        field_id = loc.get("field_id")
+        visible_label = loc.get("visible_label")
+
+        if visible_label is None or visible_label == "":
+            results.append(_skipped("2.5.3", issue_key, "No visible label available"))
+            continue
+
+        field = field_by_id.get(field_id)
+
+        if field is None:
+            results.append(_skipped("2.5.3", issue_key, f"Field '{field_id}' not found"))
+            continue
+
+        field_name = field.get("name")
+
+        if not field_name:
+            results.append(_skipped("2.5.3", issue_key, "Field has no /T name"))
+            continue
+
+        field_obj = _find_acroform_field(pdf, field_name)
+
+        if field_obj is None:
+            results.append(_skipped("2.5.3", issue_key, f"Field '{field_name}' not found in PDF"))
+            continue
+
+        field_obj["/TU"] = pikepdf.String(visible_label)
+
+        results.append(_fixed(
+            "2.5.3",
+            issue_key,
+            f"Set /TU to visible label exactly: '{visible_label}'"
+        ))
+
+    return results
 
 # ═══════════════════════════════════════════════════════════════
 # BATCH 2 FIXES — Hala
@@ -745,12 +1409,80 @@ def fix_3_3_2_form_tooltips(
       doc_json["document"]["interactivity"]["acroform_fields"]
         each field: id, name (/T), tooltip (/TU), type, page_index
     """
-    # Sandra implements here
     results = []
     targets = _filter_issues(issues, "3.3.2")
+    if not targets:
+        return results
+
+    acroform_fields = (
+        _get_doc(doc_json)
+        .get("interactivity", {})
+        .get("acroform_fields", [])
+    )
+    field_by_id = {f["id"]: f for f in acroform_fields if f.get("id")}
+
+    TYPE_FALLBACK = {"Tx": "Text field", "Btn": "Button", "Ch": "Dropdown"}
+
     for iss in targets:
-        results.append(_skipped("3.3.2", iss.get("issue", "")[:80],
-                                "Not yet implemented - Sandra"))
+        loc = iss.get("location", {})
+        field_id   = loc.get("field_id")
+        field_name = loc.get("field_name")
+        issue_key  = iss.get("issue", "")[:80]
+
+        try:
+            if field_name:
+                # CASE MED/LOW: has /T, just missing /TU
+                label = _clean_field_name(field_name)
+                field_obj = _find_acroform_field(pdf, field_name)
+                if field_obj is None:
+                    results.append(_skipped("3.3.2", issue_key,
+                                            f"Field '{field_name}' not found in AcroForm"))
+                    continue
+                field_obj["/TU"] = pikepdf.String(label)
+                results.append(_fixed("3.3.2", issue_key,
+                                      f"Set /TU='{label}' on field '{field_name}'"))
+
+            else:
+                # CASE HIGH: no /T at all — match by type, no /TU already set
+                doc_field = field_by_id.get(field_id)
+                if doc_field is None:
+                    results.append(_skipped("3.3.2", issue_key,
+                                            f"field_id '{field_id}' not found in doc_json"))
+                    continue
+
+                field_type = doc_field.get("type") or loc.get("field_type")
+                label = TYPE_FALLBACK.get(field_type, "Form field")
+
+                acroform = pdf.Root.get("/AcroForm")
+                if acroform is None:
+                    results.append(_skipped("3.3.2", issue_key, "No AcroForm in PDF"))
+                    continue
+
+                matched = False
+                for field_ref in acroform.get("/Fields", []):
+                    try:
+                        obj = pdf.get_object(field_ref.objgen)
+                        t_val  = obj.get("/T")
+                        ft_val = str(obj.get("/FT", "")).lstrip("/")
+                        tu_val = obj.get("/TU")
+
+                        if t_val is None and ft_val == field_type and tu_val is None:
+                            obj["/TU"] = pikepdf.String(label)
+                            matched = True
+                            break
+                    except Exception:
+                        continue
+
+                if matched:
+                    results.append(_fixed("3.3.2", issue_key,
+                                          f"Set /TU='{label}' on unnamed {field_type} field"))
+                else:
+                    results.append(_skipped("3.3.2", issue_key,
+                                            f"Could not locate unnamed field in AcroForm"))
+
+        except Exception as exc:
+            results.append(_skipped("3.3.2", issue_key, f"Error: {exc}"))
+
     return results
 
 
@@ -760,34 +1492,10 @@ def fix_4_1_2_figure_alt(
     doc_json: dict,
     original_pdf_path: str,
 ) -> list[dict]:
-    """
-    WCAG 4.1.2 - Figure node missing /Alt in struct tree (severity: high)
-    Owner: Sandra | Method: GPT-4o vision
+    import base64
+    import fitz
+    from app.services.openai_client import get_openai_client
 
-    DATA AVAILABLE:
-      doc_json["document"]["structure"]["figures"]
-        each fig: id, alt (None=problem), mcids, page_object_ref, children
-
-      doc_json["document"]["images"]["occurrences"]
-        each occ: struct_figure_id (matches fig["id"]), asset_id, page_index
-
-      Image bytes: re-open original_pdf_path with fitz (same as Jana's 1.1.1)
-
-    FIX STEPS:
-      1. Filter issues: criterion="4.1.2", "Figure" and "/Alt" in issue text
-      2. For each: find figure node in doc_json structure figures where alt=None
-      3. Find image occurrence via occ["struct_figure_id"] == fig["id"]
-      4. Extract image bytes with fitz, call GPT-4o (same prompt as 1.1.1)
-      5. Walk pdf.Root["/StructTreeRoot"]["/K"] recursively to find Figure node
-         matching by MCIDs or page_object_ref
-      6. Write: figure_node["/Alt"] = pikepdf.String(alt_text)
-         (Node already exists — just add /Alt to it, simpler than 1.1.1)
-      7. Return _fixed(...) on success
-
-    NOTE: The Figure node already exists here. Much simpler than 1.1.1
-    because you only need to write /Alt onto an existing node.
-    """
-    # Sandra implements here
     results = []
     targets = [
         iss for iss in issues
@@ -796,9 +1504,205 @@ def fix_4_1_2_figure_alt(
         and "/Alt" in str(iss.get("issue", ""))
         and iss.get("severity") not in {"pass", "not_applicable"}
     ]
+    if not targets:
+        return results
+
+    doc_data    = _get_doc(doc_json)
+    figures     = doc_data.get("structure", {}).get("figures", [])
+    occurrences = doc_data.get("images", {}).get("occurrences", [])
+    text_spans  = doc_data.get("text_spans", [])
+
+    fig_by_id  = {f["id"]: f for f in figures if f.get("id")}
+    occ_by_fig = {o["struct_figure_id"]: o for o in occurrences if o.get("struct_figure_id")}
+
+    try:
+        fitz_doc = fitz.open(original_pdf_path)
+    except Exception as exc:
+        for iss in targets:
+            results.append(_skipped("4.1.2", "figure_missing_alt",
+                                    f"Could not open PDF with fitz: {exc}"))
+        return results
+
+    try:
+        client = get_openai_client()
+    except RuntimeError as exc:
+        for iss in targets:
+            results.append(_skipped("4.1.2", "figure_missing_alt", str(exc)))
+        fitz_doc.close()
+        return results
+
+    def _get_nearby_text(page_index: int, bbox: list) -> str:
+        if not bbox or page_index is None:
+            return ""
+        y0 = bbox[1]
+        nearby = [
+            s["text"] for s in text_spans
+            if s.get("page_index") == page_index
+            and s.get("bbox")
+            and abs(s["bbox"][1] - y0) < 50
+        ]
+        return " ".join(nearby[:10])
+
+    def _extract_image_bytes_by_bbox(page_index: int, bbox: list) -> bytes | None:
+        """Extract image bytes from page by finding the image closest to bbox."""
+        try:
+            page = fitz_doc.load_page(page_index)
+            img_list = page.get_images(full=True)
+            if not img_list:
+                return None
+
+            if bbox:
+                # Find image whose bbox best overlaps with the figure bbox
+                x0, y0, x1, y1 = bbox
+                best_xref = None
+                best_overlap = -1
+                for img_info in page.get_image_info(xrefs=True):
+                    ix0 = img_info["bbox"][0]
+                    iy0 = img_info["bbox"][1]
+                    ix1 = img_info["bbox"][2]
+                    iy1 = img_info["bbox"][3]
+                    overlap = (
+                        max(0, min(x1, ix1) - max(x0, ix0)) *
+                        max(0, min(y1, iy1) - max(y0, iy0))
+                    )
+                    if overlap > best_overlap:
+                        best_overlap = overlap
+                        best_xref = img_info.get("xref")
+                if best_xref:
+                    return fitz_doc.extract_image(best_xref)["image"]
+
+            # Fallback: return first image on page
+            return fitz_doc.extract_image(img_list[0][0])["image"] if img_list else None
+
+        except Exception as exc:
+            logger.debug("_extract_image_bytes_by_bbox: %s", exc)
+            return None
+
+    def _find_figure_node(struct_tree, target_mcids: list):
+        """Recursively walk StructTreeRoot to find Figure node matching MCIDs."""
+        try:
+            if not isinstance(struct_tree, pikepdf.Dictionary):
+                struct_tree = struct_tree.get_object()
+        except Exception:
+            return None
+
+        s_type = str(struct_tree.get("/S", ""))
+        if s_type == "/Figure":
+            k = struct_tree.get("/K")
+            if k is not None:
+                node_mcids = []
+                if isinstance(k, pikepdf.Array):
+                    for item in k:
+                        try:
+                            node_mcids.append(int(item))
+                        except Exception:
+                            pass
+                else:
+                    try:
+                        node_mcids.append(int(k))
+                    except Exception:
+                        pass
+                if any(m in node_mcids for m in (target_mcids or [])):
+                    return struct_tree
+
+        kids = struct_tree.get("/K")
+        if kids is None:
+            return None
+        if not isinstance(kids, pikepdf.Array):
+            kids = [kids]
+        for kid in kids:
+            found = _find_figure_node(kid, target_mcids)
+            if found is not None:
+                return found
+        return None
+
     for iss in targets:
-        results.append(_skipped("4.1.2", "figure_missing_alt",
-                                "Not yet implemented - Sandra"))
+        issue_key = "figure_missing_alt"
+        try:
+            # Find a figure with no alt text
+            target_fig = next(
+                (f for f in figures if not f.get("alt") and not f.get("actual_text")),
+                None
+            )
+            if target_fig is None:
+                results.append(_skipped("4.1.2", issue_key,
+                                        "No figure with missing /Alt found in doc_json"))
+                continue
+
+            fig_id     = target_fig["id"]
+            mcids      = target_fig.get("mcids", [])
+            occ        = occ_by_fig.get(fig_id)
+            page_index = occ["page_index"] if occ else None
+            bbox       = occ.get("bbox")   if occ else None
+
+            if page_index is None:
+                results.append(_skipped("4.1.2", issue_key,
+                                        f"No page_index for figure '{fig_id}'"))
+                continue
+
+            # Extract image bytes by bbox overlap
+            img_bytes = _extract_image_bytes_by_bbox(page_index, bbox)
+            if not img_bytes:
+                results.append(_skipped("4.1.2", issue_key,
+                                        f"Could not extract image bytes for figure '{fig_id}'"))
+                continue
+
+            # Get nearby text for context
+            nearby_text = _get_nearby_text(page_index, bbox)
+
+            # Call GPT-4o vision
+            b64_image = base64.standard_b64encode(img_bytes).decode("utf-8")
+            prompt = (
+                f"Describe this image in one concise sentence (max 125 characters) "
+                f"suitable as alt text for a PDF. Context: {nearby_text}. "
+                f"Return ONLY the alt text. No explanation. No quotes."
+            )
+            response = client.chat.completions.create(
+                model="gpt-4o",
+                max_tokens=100,
+                messages=[{
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "image_url",
+                            "image_url": {
+                                "url": f"data:image/png;base64,{b64_image}",
+                                "detail": "low",
+                            },
+                        },
+                        {"type": "text", "text": prompt},
+                    ],
+                }],
+            )
+            alt_text = response.choices[0].message.content.strip()
+
+            # Validate response
+            if not alt_text or "cannot" in alt_text.lower() or len(alt_text) > 200:
+                results.append(_skipped("4.1.2", issue_key,
+                                        f"GPT-4o returned unusable alt text: '{alt_text}'"))
+                continue
+
+            # Find Figure node in StructTreeRoot and write /Alt
+            struct_root = pdf.Root.get("/StructTreeRoot")
+            if struct_root is None:
+                results.append(_skipped("4.1.2", issue_key,
+                                        "No /StructTreeRoot in PDF"))
+                continue
+
+            figure_node = _find_figure_node(struct_root, mcids)
+            if figure_node is None:
+                results.append(_skipped("4.1.2", issue_key,
+                                        f"Figure node with MCIDs {mcids} not found in struct tree"))
+                continue
+
+            figure_node["/Alt"] = pikepdf.String(alt_text)
+            results.append(_fixed("4.1.2", issue_key,
+                                  f"Set /Alt='{alt_text[:60]}' on Figure node"))
+
+        except Exception as exc:
+            results.append(_skipped("4.1.2", issue_key, f"Error: {exc}"))
+
+    fitz_doc.close()
     return results
 
 
@@ -808,26 +1712,6 @@ def fix_4_1_2_checkbox_state(
     doc_json: dict,
     original_pdf_path: str,
 ) -> list[dict]:
-    """
-    WCAG 4.1.2 - Checkbox/radio missing /AS appearance state (severity: high)
-    Owner: Sandra | Method: Pure code
-
-    DATA AVAILABLE:
-      issue["location"]["field_id"]   -> field ID
-      issue["location"]["field_type"] -> "checkbox" or "radio button"
-
-      doc_json["document"]["interactivity"]["acroform_fields"]
-        -> find by field_id -> get field["name"] (/T value)
-
-    FIX STEPS:
-      1. Filter: criterion="4.1.2", "appearance state" in issue text
-      2. For each: find field in acroform_fields by field_id -> get field["name"]
-      3. field_obj = _find_acroform_field(pdf, field["name"])
-      4. Write: field_obj["/AS"] = pikepdf.Name("/Off")
-         /Off = universal PDF spec default for unchecked state
-      5. Return _fixed(...) on success
-    """
-    # Sandra implements here
     results = []
     targets = [
         iss for iss in issues
@@ -835,9 +1719,47 @@ def fix_4_1_2_checkbox_state(
         and "appearance state" in str(iss.get("issue", ""))
         and iss.get("severity") not in {"pass", "not_applicable"}
     ]
+    if not targets:
+        return results
+
+    acroform_fields = (
+        _get_doc(doc_json)
+        .get("interactivity", {})
+        .get("acroform_fields", [])
+    )
+    field_by_id = {f["id"]: f for f in acroform_fields if f.get("id")}
+
     for iss in targets:
-        results.append(_skipped("4.1.2", "checkbox_missing_as_state",
-                                "Not yet implemented - Sandra"))
+        loc = iss.get("location", {})
+        field_id  = loc.get("field_id")
+        issue_key = "checkbox_missing_as_state"
+
+        try:
+            doc_field = field_by_id.get(field_id)
+            if doc_field is None:
+                results.append(_skipped("4.1.2", issue_key,
+                                        f"field_id '{field_id}' not found in doc_json"))
+                continue
+
+            field_name = doc_field.get("name")
+            if not field_name:
+                results.append(_skipped("4.1.2", issue_key,
+                                        f"Field has no /T value, cannot locate in AcroForm"))
+                continue
+
+            field_obj = _find_acroform_field(pdf, field_name)
+            if field_obj is None:
+                results.append(_skipped("4.1.2", issue_key,
+                                        f"Field '{field_name}' not found in AcroForm"))
+                continue
+
+            field_obj["/AS"] = pikepdf.Name("/Off")
+            results.append(_fixed("4.1.2", issue_key,
+                                  f"Set /AS=/Off on field '{field_name}'"))
+
+        except Exception as exc:
+            results.append(_skipped("4.1.2", issue_key, f"Error: {exc}"))
+
     return results
 
 
@@ -847,32 +1769,35 @@ def fix_2_1_1_tab_order(
     doc_json: dict,
     original_pdf_path: str,
 ) -> list[dict]:
-    """
-    WCAG 2.1.1 - No /Tabs on pages with form fields (severity: medium)
-    Owner: Sandra | Method: Pure code
-
-    DATA AVAILABLE:
-      doc_json["document"]["interactivity"]["has_tab_order"] -> False
-      doc_json["document"]["interactivity"]["acroform_fields"]
-        -> each field has page_index -> tells you which pages have fields
-      doc_json["document"]["interactivity"]["tab_order"]
-        -> list of {page_index, tabs} tabs=None on affected pages
-
-    FIX STEPS:
-      1. Check issue exists for 2.1.1
-      2. Collect unique page_index values from acroform_fields
-      3. For each page_index:
-           pdf.pages[page_index]["/Tabs"] = pikepdf.Name("/S")
-           /S = structure order (Tab key follows logical reading order)
-      4. Return _fixed(...) listing how many pages were updated
-    """
-    # Sandra implements here
     results = []
     targets = _filter_issues(issues, "2.1.1")
     if not targets:
         return results
-    results.append(_skipped("2.1.1", "no_tab_order",
-                            "Not yet implemented - Sandra"))
+
+    try:
+        acroform_fields = (
+            _get_doc(doc_json)
+            .get("interactivity", {})
+            .get("acroform_fields", [])
+        )
+        page_indices = {f["page_index"] for f in acroform_fields if f.get("page_index") is not None}
+
+        if not page_indices:
+            results.append(_skipped("2.1.1", "no_tab_order", "No form fields found on any page"))
+            return results
+
+        for page_index in sorted(page_indices):
+            if page_index < len(pdf.pages):
+                pdf.pages[page_index]["/Tabs"] = pikepdf.Name("/S")
+
+        results.append(_fixed(
+            "2.1.1",
+            "no_tab_order",
+            f"Set /Tabs /S on {len(page_indices)} page(s): {sorted(page_indices)}"
+        ))
+    except Exception as exc:
+        results.append(_skipped("2.1.1", "no_tab_order", f"Error: {exc}"))
+
     return results
 
 
@@ -892,6 +1817,8 @@ FIXERS = [
     fix_1_1_1_control_name,
     fix_1_4_3_contrast,
     fix_2_5_3_label_in_name,
+    fix_1_4_1_color_only,
+    fix_1_4_11_non_text_contrast,
     # Batch 3 — Sandra
     fix_3_3_2_form_tooltips,
     fix_4_1_2_figure_alt,
