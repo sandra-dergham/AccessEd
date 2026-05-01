@@ -1,11 +1,11 @@
 from fastapi import APIRouter, UploadFile, File, HTTPException
-from fastapi.responses import StreamingResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from uuid import uuid4
 import os
 import sys
 import json
 import io
-from app.services.corrector import apply_corrections
+
 
 # Ensure backend/ is on the path so app.services.wcag resolves correctly
 _BACKEND_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
@@ -131,14 +131,31 @@ async def upload_pdf(file: UploadFile = File(...)):
             status_code=500,
         detail=f"PDF generation failed: {e}"
     )
-    # ── Step 6: Return response ───────────────────────────────────────────────
+    # ── Step 6: Apply corrections and save corrected PDF ──────────────────
+    try:
+        from app.services.corrector import apply_corrections
+        corrected_path = os.path.join(UPLOAD_DIR, f"{upload_id}_corrected.pdf")
+        correction_result = apply_corrections(
+            original_pdf_path=out_path,
+            issues=issues,
+            doc_json=doc_json,
+            output_path=corrected_path,
+        )
+    except Exception as e:
+        correction_result = {"status": "failed", "error": str(e)}
+        corrected_path = None
+
+    # ── Step 7: Return response ───────────────────────────────────────────────
     return {
         "upload_id":         upload_id,
         "original_filename": file.filename,
         "size_bytes":        total,
         "status":            "analysed",
         "report":            report,
-        "pdf_report_path": pdf_out_path,
+        "pdf_report_path":   pdf_out_path,
+        "correction_status": correction_result.get("status"),
+        "fixed_count":       correction_result.get("fixed_count", 0),
+        "corrected_pdf_path": corrected_path,
     }
 
 @router.get("/uploads/{upload_id}/report")
@@ -177,7 +194,7 @@ async def download_report(upload_id: str):
         media_type="application/pdf",
         headers={
             "Content-Disposition": f"attachment; filename=report_{upload_id}.pdf"
-        }
+        },
         filename=f"report-{upload_id}.pdf",
     )
 

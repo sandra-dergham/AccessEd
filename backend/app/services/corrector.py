@@ -52,7 +52,6 @@ import re
 import shutil
 from typing import Any
 
-from matplotlib import widgets
 import pikepdf
 from .wcag.helper_function_b1 import contrast_ratio,_find_accessible_color
 

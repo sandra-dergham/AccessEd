@@ -1,5 +1,5 @@
 import { useRef, useState } from "react";
-import { uploadPdf, downloadReport } from "../api/upload";
+import { uploadPdf, downloadReport, downloadCorrected } from "../api/upload";
 
 const MAX_BYTES = 10 * 1024 * 1024;
 
@@ -20,8 +20,13 @@ export default function UploadCard() {
 
   const [uploadId, setUploadId] = useState<string | null>(null);
   const [uploadedFilename, setUploadedFilename] = useState<string>("");
+  const [fixedCount, setFixedCount] = useState<number | null>(null);
+  const [flaggedCount, setFlaggedCount] = useState<number | null>(null);
+
   const [downloading, setDownloading] = useState(false);
   const [downloadError, setDownloadError] = useState<string | null>(null);
+  const [downloadingCorrected, setDownloadingCorrected] = useState(false);
+  const [downloadCorrectedError, setDownloadCorrectedError] = useState<string | null>(null);
 
   function validate(file: File): string | null {
     setSuccess(null);
@@ -45,6 +50,9 @@ export default function UploadCard() {
     setError(null);
     setUploadId(null);
     setDownloadError(null);
+    setDownloadCorrectedError(null);
+    setFixedCount(null);
+    setFlaggedCount(null);
     setUploading(true);
     setProgress(0);
     setIndeterminate(false);
@@ -64,6 +72,7 @@ export default function UploadCard() {
 
       setUploadId(result.upload_id);
       setUploadedFilename(result.original_filename);
+      setFixedCount(result.fixed_count ?? null);
       setSuccess(`Analysed successfully: ${file.name}`);
     } catch (e: any) {
       setError(e?.detail || "Upload failed.");
@@ -82,6 +91,19 @@ export default function UploadCard() {
       setDownloadError(e?.message || "Failed to download report.");
     } finally {
       setDownloading(false);
+    }
+  }
+
+  async function handleDownloadCorrected() {
+    if (!uploadId) return;
+    setDownloadCorrectedError(null);
+    setDownloadingCorrected(true);
+    try {
+      await downloadCorrected(uploadId, uploadedFilename);
+    } catch (e: any) {
+      setDownloadCorrectedError(e?.message || "Failed to download corrected PDF.");
+    } finally {
+      setDownloadingCorrected(false);
     }
   }
 
@@ -104,10 +126,7 @@ export default function UploadCard() {
           tabIndex={0}
           aria-label="Upload PDF"
           onClick={() => inputRef.current?.click()}
-          onDragOver={(e) => {
-            e.preventDefault();
-            setDragOver(true);
-          }}
+          onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
           onDragLeave={() => setDragOver(false)}
           onDrop={onDrop}
           onKeyDown={(e) => {
@@ -116,7 +135,6 @@ export default function UploadCard() {
         >
           <div className="drop-title">Drag & drop PDF here</div>
           <div className="drop-hint">or click to choose file</div>
-
           <input
             ref={inputRef}
             type="file"
@@ -137,11 +155,8 @@ export default function UploadCard() {
         </div>
 
         {error && (
-          <div className="alert error" role="alert">
-            {error}
-          </div>
+          <div className="alert error" role="alert">{error}</div>
         )}
-
         {success && <div className="alert success">{success}</div>}
 
         {uploading && (
@@ -161,19 +176,36 @@ export default function UploadCard() {
 
         {uploadId && !uploading && (
           <div className="report-actions">
+            {fixedCount !== null && (
+              <div className="fix-summary">
+                Auto-corrections applied:{" "}
+                <strong>{fixedCount} issue{fixedCount !== 1 ? "s" : ""} fixed</strong>
+              </div>
+            )}
+            <div className="report-actions-row">
             <button
               className="btn-report"
               onClick={handleDownloadReport}
               disabled={downloading}
               aria-busy={downloading}
             >
-              {downloading ? "Generating…" : "⬇ Download PDF Report"}
+              {downloading ? "Generating…" : "⬇ Download PDF report"}
             </button>
-
             {downloadError && (
-              <div className="alert error" role="alert">
-                {downloadError}
-              </div>
+              <div className="alert error" role="alert">{downloadError}</div>
+            )}
+
+            <button
+              className="btn-report"
+              onClick={handleDownloadCorrected}
+              disabled={downloadingCorrected}
+              aria-busy={downloadingCorrected}
+            >
+              {downloadingCorrected ? "Preparing…" : "⬇ Download corrected PDF"}
+            </button>
+            </div>
+            {downloadCorrectedError && (
+              <div className="alert error" role="alert">{downloadCorrectedError}</div>
             )}
           </div>
         )}

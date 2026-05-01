@@ -4,6 +4,8 @@ export type UploadResponse = {
   size_bytes: number;
   status: string;
   report?: object;
+  correction_status?: string;
+  fixed_count?: number;
 };
 
 type UploadProgress =
@@ -93,5 +95,35 @@ export async function downloadReport(
   document.body.appendChild(a);
   a.click();
   a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 5000);
+}
+
+export async function downloadCorrected(
+  uploadId: string,
+  originalFilename: string
+): Promise<void> {
+  const response = await fetch(
+    `https://accessed-c79k.onrender.com/api/uploads/${uploadId}/corrected`
+  );
+
+  if (!response.ok) {
+    let detail = "Failed to download corrected PDF.";
+    try {
+      const err = await response.json();
+      detail = err.detail || detail;
+    } catch {}
+    throw new Error(detail);
+  }
+
+  const blob = await response.blob();
+  const url = URL.createObjectURL(blob);
+
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `corrected-${originalFilename}`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+
   setTimeout(() => URL.revokeObjectURL(url), 5000);
 }
