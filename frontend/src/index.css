@@ -403,4 +403,10 @@ a {
   cursor: not-allowed;
   background: rgba(255, 255, 255, 0.05);
   border-color: var(--border);
+  
+}
+.report-actions{
+  display: flex;
+  gap: 15px; 
+  flex-wrap: wrap; 
 }

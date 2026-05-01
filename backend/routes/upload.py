@@ -1,5 +1,5 @@
 from fastapi import APIRouter, UploadFile, File, HTTPException
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, FileResponse
 from uuid import uuid4
 import os
 import sys
@@ -131,6 +131,21 @@ async def upload_pdf(file: UploadFile = File(...)):
             status_code=500,
         detail=f"PDF generation failed: {e}"
     )
+
+    # ── Step 6: Apply corrections and save corrected PDF ──────────────────
+    try:
+        corrected_path = os.path.join(UPLOAD_DIR, f"{upload_id}_corrected.pdf")
+
+        correction_result = apply_corrections(
+        original_pdf_path=out_path,
+        issues=issues,
+        doc_json=doc_json,
+        output_path=corrected_path,
+    )
+
+    except Exception as e:
+        correction_result = {"status": "failed", "error": str(e)}
+        corrected_path = None
     # ── Step 6: Return response ───────────────────────────────────────────────
     return {
         "upload_id":         upload_id,
@@ -139,6 +154,7 @@ async def upload_pdf(file: UploadFile = File(...)):
         "status":            "analysed",
         "report":            report,
         "pdf_report_path": pdf_out_path,
+        "corrected_path": corrected_path,
     }
 
 @router.get("/uploads/{upload_id}/report")
@@ -177,7 +193,7 @@ async def download_report(upload_id: str):
         media_type="application/pdf",
         headers={
             "Content-Disposition": f"attachment; filename=report_{upload_id}.pdf"
-        }
+        },
         filename=f"report-{upload_id}.pdf",
     )
 
