@@ -330,62 +330,57 @@ def _find_figure_node(struct_figure_id: str):
         if root is None:
             return None
 
-        def walk(node):
+def walk(node):
+    try:
+        if not isinstance(node, pikepdf.Dictionary):
             try:
-                if not isinstance(node, pikepdf.Dictionary):
-                    try:
-                        node = node.get_object()
-                    except Exception:
-                        return None
-
-                if not isinstance(node, pikepdf.Dictionary):
-                    return None
-
-                s_type = str(node.get("/S", ""))
-                if s_type == "/Figure":
-                    k = node.get("/K")
-                    if k is not None:
-                        node_mcids = []
-                        if isinstance(k, pikepdf.Array):
-                            for item in k:
-                                try:
-                                    node_mcids.append(int(item))
-                                except Exception:
-                                    pass
-                        else:
-                            try:
-                                node_mcids.append(int(k))
-                            except Exception:
-                                pass
-                        if any(m in node_mcids for m in target_mcids):
-                            return node
-
-                kids = node.get("/K")
-                if kids is None:
-                    return None
-                if not isinstance(kids, pikepdf.Array):
-                    kids = [kids]
-                for kid in kids:
-                    try:
-                        found = walk(kid)
-                        if found is not None:
-                            return found
-                    except Exception:
-                        continue
-
+                node = node.get_object()
             except Exception:
-                pass
+                return None
+
+        if not isinstance(node, pikepdf.Dictionary):
             return None
 
-        try:
-            return walk(root)
-        except Exception as exc:
-            logger.debug("_find_figure_node walk failed: %s", exc)
+        s_type = str(node.get("/S", ""))
+        if s_type == "/Figure":
+            k = node.get("/K")
+            if k is not None:
+                node_mcids = []
+                if isinstance(k, pikepdf.Array):
+                    for item in k:
+                        try:
+                            node_mcids.append(int(item))
+                        except Exception:
+                            pass
+                else:
+                    try:
+                        node_mcids.append(int(k))
+                    except Exception:
+                        pass
+                if any(m in node_mcids for m in target_mcids):
+                    return node
+
+        kids = node.get("/K")
+        if kids is None:
             return None
 
-    except Exception as exc:
-        logger.debug("_find_figure_node failed: %s", exc)
-        return None
+        # /K might be a direct integer MCID — not a child node, skip iteration
+        if isinstance(kids, pikepdf.Array):
+            for kid in kids:
+                try:
+                    # skip plain integers — they are MCIDs, not child nodes
+                    if isinstance(kid, (int, float)):
+                        continue
+                    found = walk(kid)
+                    if found is not None:
+                        return found
+                except Exception:
+                    continue
+        # if /K is not an array, it's a direct MCID integer — nothing to recurse into
+
+    except Exception:
+        pass
+    return None
 
     def _ask_ai_for_alt_text(img_bytes: bytes, nearby_text: str) -> str | None:
         try:
