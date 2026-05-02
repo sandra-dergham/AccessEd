@@ -188,15 +188,14 @@ async def download_report(upload_id: str):
         )
 
     # ── Step 3: Return as a downloadable PDF file ─────────────────────────────
-    return StreamingResponse(
-        io.BytesIO(pdf_bytes),
-        media_type="application/pdf",
-        headers={
-            "Content-Disposition": f"attachment; filename=report_{upload_id}.pdf"
-        },
-        filename=f"report-{upload_id}.pdf",
-    )
-
+ return StreamingResponse(
+    io.BytesIO(pdf_bytes),
+    media_type="application/pdf",
+    headers={
+        "Content-Disposition": f"attachment; filename=report_{upload_id}.pdf"
+    },
+)
+    
 
 @router.get("/uploads/{upload_id}/corrected")
 async def download_corrected(upload_id: str):
