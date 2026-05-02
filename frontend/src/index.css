@@ -410,3 +410,28 @@ a {
   gap: 15px; 
   flex-wrap: wrap; 
 }
+
+.info-box {
+  margin: 1rem 0 1.25rem;
+  padding: 1rem 1.25rem;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  display: flex;
+  flex-direction: column;
+  gap: 0.65rem;
+}
+
+.info-what {
+  font-size: 0.92rem;
+  color: #c2c2d6;
+  line-height: 1.6;
+  margin: 0;
+}
+
+.info-privacy {
+  font-size: 0.9rem;
+  color: #a0c4a0;
+  line-height: 1.5;
+  margin: 0;
+}
