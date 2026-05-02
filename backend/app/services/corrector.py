@@ -173,6 +173,142 @@ def _clean_field_name(raw: str) -> str:
 # BATCH 1 FIXES — Jana
 # ═══════════════════════════════════════════════════════════════
 
+def fix_1_1_1_image_alt_text(
+    pdf: pikepdf.Pdf,
+    issues: list[dict],
+    doc_json: dict,
+    original_pdf_path: str,
+) -> list[dict]:
+    """
+    WCAG 1.1.1 - image_missing_text_alternative
+    Owner: Jana | Method: GPT-4o vision
+    """
+    import base64
+    import logging
+    import fitz
+    from app.services.openai_client import get_openai_client
+
+    logger = logging.getLogger(__name__)
+
+    results = []
+    issue_key = "image_missing_text_alternative"
+    targets = _filter_issues(issues, "1.1.1", issue_key)
+
+    if not targets:
+        return results
+
+    doc_data = _get_doc(doc_json)
+
+    occurrences = (
+        doc_data.get("images", {}).get("occurrences", [])
+        or doc_data.get("image_occurrences", [])
+        or []
+    )
+
+    text_spans = doc_data.get("text_spans", [])
+
+    occ_by_id = {occ.get("id"): occ for occ in occurrences if occ.get("id")}
+
+    try:
+        fitz_doc = fitz.open(original_pdf_path)
+    except Exception as exc:
+        for iss in targets:
+            results.append(_skipped("1.1.1", issue_key, f"Could not open PDF: {exc}"))
+        return results
+
+    try:
+        client = get_openai_client()
+    except Exception as exc:
+        fitz_doc.close()
+        for iss in targets:
+            results.append(_skipped("1.1.1", issue_key, f"OpenAI client unavailable: {exc}"))
+        return results
+
+    def _bbox_center(bbox: list[float]) -> tuple[float, float]:
+        return ((bbox[0] + bbox[2]) / 2, (bbox[1] + bbox[3]) / 2)
+
+    def _extract_image_bytes(page_index: int, occ_bbox: list[float]) -> bytes | None:
+        """
+        Finds the image on the page whose visual rectangle overlaps the occurrence bbox.
+        """
+        try:
+            page = fitz_doc.load_page(page_index)
+            target_rect = fitz.Rect(occ_bbox)
+
+            best_xref = None
+            best_overlap = 0
+
+            for img in page.get_images(full=True):
+                xref = img[0]
+                rects = page.get_image_rects(xref)
+
+                for rect in rects:
+                    overlap = rect & target_rect
+                    overlap_area = overlap.get_area() if not overlap.is_empty else 0
+
+                    if overlap_area > best_overlap:
+                        best_overlap = overlap_area
+                        best_xref = xref
+
+            if best_xref is None:
+                return None
+
+            base_image = fitz_doc.extract_image(best_xref)
+            return base_image.get("image")
+
+        except Exception as exc:
+            logger.debug("_extract_image_bytes failed: %s", exc)
+            return None
+
+    def _nearby_text(page_index: int, bbox: list[float]) -> str:
+        """
+        Collects text close to the image bbox for better AI context.
+        """
+        if not bbox:
+            return ""
+
+        x0, y0, x1, y1 = bbox
+        expanded = fitz.Rect(x0 - 80, y0 - 80, x1 + 80, y1 + 80)
+
+        nearby = []
+
+        for span in text_spans:
+            if span.get("page_index") != page_index:
+                continue
+
+            span_bbox = span.get("bbox")
+            text = span.get("text", "").strip()
+
+            if not span_bbox or not text:
+                continue
+
+            span_rect = fitz.Rect(span_bbox)
+
+            if expanded.intersects(span_rect):
+                nearby.append(text)
+
+        return " ".join(nearby)[:500]
+
+    def _iter_struct_elems(obj):
+        """
+        Recursively walks the structure tree.
+        """
+        try:
+            if isinstance(obj, pikepdf.Dictionary):
+                if obj.get("/Type") == pikepdf.Name("/StructElem"):
+                    yield obj
+
+                kids = obj.get("/K")
+                if kids is not None:
+                    yield from _iter_struct_elems(kids)
+
+            elif isinstance(obj, pikepdf.Array):
+                for item in obj:
+                    yield from _iter_struct_elems(item)
+
+        except Exception:
+            return
+
 def _find_figure_node(struct_figure_id: str):
     """
     Finds a Figure structure node by matching struct_figure_id
