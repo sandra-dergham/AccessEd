@@ -309,24 +309,68 @@ def fix_1_1_1_image_alt_text(
         except Exception:
             return
 
-    def _find_figure_node(struct_figure_id: str):
-        """
-        Finds a Figure structure node using /ID.
-        """
-        try:
-            root = pdf.Root.get("/StructTreeRoot")
-            if root is None:
+def _find_figure_node(struct_figure_id: str):
+    """
+    Finds a Figure structure node by matching struct_figure_id
+    against doc_json figures, then walking struct tree by MCIDs.
+    """
+    try:
+        # Get MCIDs for this figure from doc_json
+        figures = _get_doc(doc_json).get("structure", {}).get("figures", [])
+        target_fig = next(
+            (f for f in figures if f.get("id") == struct_figure_id),
+            None
+        )
+        if target_fig is None:
+            return None
+
+        target_mcids = target_fig.get("mcids", [])
+
+        root = pdf.Root.get("/StructTreeRoot")
+        if root is None:
+            return None
+
+        def walk(node):
+            try:
+                if not isinstance(node, pikepdf.Dictionary):
+                    node = node.get_object()
+            except Exception:
                 return None
 
-            for elem in _iter_struct_elems(root):
-                if elem.get("/S") == pikepdf.Name("/Figure"):
-                    elem_id = elem.get("/ID")
-                    if elem_id is not None and str(elem_id) == struct_figure_id:
-                        return elem
+            s_type = str(node.get("/S", ""))
+            if s_type == "/Figure":
+                k = node.get("/K")
+                if k is not None:
+                    node_mcids = []
+                    if isinstance(k, pikepdf.Array):
+                        for item in k:
+                            try:
+                                node_mcids.append(int(item))
+                            except Exception:
+                                pass
+                    else:
+                        try:
+                            node_mcids.append(int(k))
+                        except Exception:
+                            pass
+                    if any(m in node_mcids for m in target_mcids):
+                        return node
 
-        except Exception as exc:
-            logger.debug("_find_figure_node failed: %s", exc)
+            kids = node.get("/K")
+            if kids is None:
+                return None
+            if not isinstance(kids, pikepdf.Array):
+                kids = [kids]
+            for kid in kids:
+                found = walk(kid)
+                if found is not None:
+                    return found
+            return None
 
+        return walk(root)
+
+    except Exception as exc:
+        logger.debug("_find_figure_node failed: %s", exc)
         return None
 
     def _ask_ai_for_alt_text(img_bytes: bytes, nearby_text: str) -> str | None:
