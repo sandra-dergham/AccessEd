@@ -51,7 +51,7 @@ import logging
 import re
 import shutil
 from typing import Any
-git add backend/app/services/corrector.py
+
 import pikepdf
 from .wcag.helper_function_b1 import contrast_ratio,_find_accessible_color
 
