@@ -184,11 +184,8 @@ def fix_1_1_1_image_alt_text(
     Owner: Jana | Method: GPT-4o vision
     """
     import base64
-    import logging
     import fitz
     from app.services.openai_client import get_openai_client
-
-    logger = logging.getLogger(__name__)
 
     results = []
     issue_key = "image_missing_text_alternative"
@@ -198,15 +195,12 @@ def fix_1_1_1_image_alt_text(
         return results
 
     doc_data = _get_doc(doc_json)
-
     occurrences = (
         doc_data.get("images", {}).get("occurrences", [])
         or doc_data.get("image_occurrences", [])
         or []
     )
-
     text_spans = doc_data.get("text_spans", [])
-
     occ_by_id = {occ.get("id"): occ for occ in occurrences if occ.get("id")}
 
     try:
@@ -224,98 +218,47 @@ def fix_1_1_1_image_alt_text(
             results.append(_skipped("1.1.1", issue_key, f"OpenAI client unavailable: {exc}"))
         return results
 
-    def _bbox_center(bbox: list[float]) -> tuple[float, float]:
-        return ((bbox[0] + bbox[2]) / 2, (bbox[1] + bbox[3]) / 2)
-
-    def _extract_image_bytes(page_index: int, occ_bbox: list[float]) -> bytes | None:
-        """
-        Finds the image on the page whose visual rectangle overlaps the occurrence bbox.
-        """
+    def _extract_image_bytes(page_index: int, occ_bbox: list) -> bytes | None:
         try:
             page = fitz_doc.load_page(page_index)
             target_rect = fitz.Rect(occ_bbox)
-
             best_xref = None
             best_overlap = 0
-
             for img in page.get_images(full=True):
                 xref = img[0]
                 rects = page.get_image_rects(xref)
-
                 for rect in rects:
                     overlap = rect & target_rect
                     overlap_area = overlap.get_area() if not overlap.is_empty else 0
-
                     if overlap_area > best_overlap:
                         best_overlap = overlap_area
                         best_xref = xref
-
             if best_xref is None:
                 return None
-
-            base_image = fitz_doc.extract_image(best_xref)
-            return base_image.get("image")
-
+            return fitz_doc.extract_image(best_xref).get("image")
         except Exception as exc:
             logger.debug("_extract_image_bytes failed: %s", exc)
             return None
 
-    def _nearby_text(page_index: int, bbox: list[float]) -> str:
-        """
-        Collects text close to the image bbox for better AI context.
-        """
+    def _nearby_text(page_index: int, bbox: list) -> str:
         if not bbox:
             return ""
-
         x0, y0, x1, y1 = bbox
         expanded = fitz.Rect(x0 - 80, y0 - 80, x1 + 80, y1 + 80)
-
         nearby = []
-
         for span in text_spans:
             if span.get("page_index") != page_index:
                 continue
-
             span_bbox = span.get("bbox")
             text = span.get("text", "").strip()
-
             if not span_bbox or not text:
                 continue
-
-            span_rect = fitz.Rect(span_bbox)
-
-            if expanded.intersects(span_rect):
+            if expanded.intersects(fitz.Rect(span_bbox)):
                 nearby.append(text)
-
         return " ".join(nearby)[:500]
 
-    def _iter_struct_elems(obj):
-        """
-        Recursively walks the structure tree.
-        """
-        try:
-            if isinstance(obj, pikepdf.Dictionary):
-                if obj.get("/Type") == pikepdf.Name("/StructElem"):
-                    yield obj
-
-                kids = obj.get("/K")
-                if kids is not None:
-                    yield from _iter_struct_elems(kids)
-
-            elif isinstance(obj, pikepdf.Array):
-                for item in obj:
-                    yield from _iter_struct_elems(item)
-
-        except Exception:
-            return
-
     def _find_figure_node(struct_figure_id: str):
-        """
-        Finds a Figure structure node by matching struct_figure_id
-        against doc_json figures, then walking struct tree by MCIDs.
-        """
         try:
-            # Get MCIDs for this figure from doc_json
             figures = _get_doc(doc_json).get("structure", {}).get("figures", [])
             target_fig = next(
                 (f for f in figures if f.get("id") == struct_figure_id),
@@ -330,114 +273,96 @@ def fix_1_1_1_image_alt_text(
             if root is None:
                 return None
 
-    def walk(node):
-        try:
-            if not isinstance(node, pikepdf.Dictionary):
+            def walk(node):
                 try:
-                    node = node.get_object()
-                except Exception:
-                    return None
-
-            if not isinstance(node, pikepdf.Dictionary):
-                return None
-
-            s_type = str(node.get("/S", ""))
-            if s_type == "/Figure":
-                k = node.get("/K")
-                if k is not None:
-                    node_mcids = []
-                    if isinstance(k, pikepdf.Array):
-                        for item in k:
-                            try:
-                                node_mcids.append(int(item))
-                            except Exception:
-                                pass
-                    else:
+                    if not isinstance(node, pikepdf.Dictionary):
                         try:
-                            node_mcids.append(int(k))
+                            node = node.get_object()
                         except Exception:
-                            pass
-                    if any(m in node_mcids for m in target_mcids):
-                        return node
+                            return None
+                    if not isinstance(node, pikepdf.Dictionary):
+                        return None
 
-            kids = node.get("/K")
-            if kids is None:
+                    s_type = str(node.get("/S", ""))
+                    if s_type == "/Figure":
+                        k = node.get("/K")
+                        if k is not None:
+                            node_mcids = []
+                            if isinstance(k, pikepdf.Array):
+                                for item in k:
+                                    try:
+                                        node_mcids.append(int(item))
+                                    except Exception:
+                                        pass
+                            else:
+                                try:
+                                    node_mcids.append(int(k))
+                                except Exception:
+                                    pass
+                            if any(m in node_mcids for m in target_mcids):
+                                return node
+
+                    kids = node.get("/K")
+                    if kids is None:
+                        return None
+                    if isinstance(kids, pikepdf.Array):
+                        for kid in kids:
+                            try:
+                                if isinstance(kid, (int, float)):
+                                    continue
+                                found = walk(kid)
+                                if found is not None:
+                                    return found
+                            except Exception:
+                                continue
+                except Exception:
+                    pass
                 return None
 
-            # /K might be a direct integer MCID — not a child node, skip iteration
-            if isinstance(kids, pikepdf.Array):
-                for kid in kids:
-                    try:
-                        # skip plain integers — they are MCIDs, not child nodes
-                        if isinstance(kid, (int, float)):
-                            continue
-                        found = walk(kid)
-                        if found is not None:
-                            return found
-                    except Exception:
-                        continue
-            # if /K is not an array, it's a direct MCID integer — nothing to recurse into
+            try:
+                return walk(root)
+            except Exception as exc:
+                logger.debug("_find_figure_node walk failed: %s", exc)
+                return None
 
-        except Exception:
-            pass
-        return None
+        except Exception as exc:
+            logger.debug("_find_figure_node failed: %s", exc)
+            return None
 
     def _ask_ai_for_alt_text(img_bytes: bytes, nearby_text: str) -> str | None:
         try:
             b64_image = base64.b64encode(img_bytes).decode("utf-8")
-
             prompt = (
                 "Describe this image in one concise sentence suitable as alt text "
                 "for a PDF. Maximum 125 characters. "
                 f"Nearby page context: {nearby_text or 'No nearby text available.'} "
                 "Return ONLY the alt text. No explanation. No quotes."
             )
-
             response = client.chat.completions.create(
                 model="gpt-4o",
                 temperature=0,
                 max_tokens=60,
-                messages=[
-                    {
-                        "role": "user",
-                        "content": [
-                            {
-                                "type": "image_url",
-                                "image_url": {
-                                    "url": f"data:image/png;base64,{b64_image}",
-                                    "detail": "low",
-                                },
+                messages=[{
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "image_url",
+                            "image_url": {
+                                "url": f"data:image/png;base64,{b64_image}",
+                                "detail": "low",
                             },
-                            {"type": "text", "text": prompt},
-                        ],
-                    }
-                ],
+                        },
+                        {"type": "text", "text": prompt},
+                    ],
+                }],
             )
-
             alt_text = response.choices[0].message.content.strip().strip('"').strip("'")
-
-            bad_phrases = [
-                "i cannot",
-                "i can't",
-                "sorry",
-                "unable to",
-                "cannot determine",
-            ]
-
-            if not alt_text:
+            bad_phrases = ["i cannot", "i can't", "sorry", "unable to", "cannot determine"]
+            if not alt_text or len(alt_text) > 200 or "\n" in alt_text:
                 return None
-
-            if len(alt_text) > 200:
-                return None
-
-            if "\n" in alt_text:
-                return None
-
             if any(phrase in alt_text.lower() for phrase in bad_phrases):
                 return None
-
             return alt_text
-
         except Exception as exc:
             logger.warning("AI alt text generation failed: %s", exc)
             return None
@@ -449,7 +374,6 @@ def fix_1_1_1_image_alt_text(
             page_index = loc.get("page", loc.get("page_index"))
 
             occ = occ_by_id.get(image_id)
-
             if occ is None:
                 results.append(_skipped("1.1.1", issue_key, f"Image occurrence '{image_id}' not found"))
                 continue
@@ -465,13 +389,11 @@ def fix_1_1_1_image_alt_text(
                 continue
 
             img_bytes = _extract_image_bytes(page_index, bbox)
-
             if not img_bytes:
                 results.append(_skipped("1.1.1", issue_key, "Could not extract image bytes"))
                 continue
 
             nearby = _nearby_text(page_index, bbox)
-
             alt_text = _ask_ai_for_alt_text(img_bytes, nearby)
 
             if not alt_text:
@@ -479,26 +401,19 @@ def fix_1_1_1_image_alt_text(
                 continue
 
             if not struct_figure_id:
-                results.append(_skipped(
-                    "1.1.1",
-                    issue_key,
-                    "No linked Figure structure node found; creating new tags should be handled separately"
-                ))
+                results.append(_skipped("1.1.1", issue_key,
+                    "No linked Figure structure node found"))
                 continue
 
             figure_node = _find_figure_node(struct_figure_id)
-
             if figure_node is None:
-                results.append(_skipped("1.1.1", issue_key, f"Figure node '{struct_figure_id}' not found"))
+                results.append(_skipped("1.1.1", issue_key,
+                    f"Figure node '{struct_figure_id}' not found"))
                 continue
 
             figure_node["/Alt"] = pikepdf.String(alt_text)
-
-            results.append(_fixed(
-                "1.1.1",
-                issue_key,
-                f"Set image /Alt='{alt_text}' via GPT-4o vision"
-            ))
+            results.append(_fixed("1.1.1", issue_key,
+                f"Set image /Alt='{alt_text}' via GPT-4o vision"))
 
         except Exception as exc:
             results.append(_skipped("1.1.1", issue_key, f"Error: {exc}"))
