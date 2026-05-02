@@ -185,8 +185,8 @@ export default function UploadCard() {
             aria-label="Upload progress"
           >
             <div className="progress-row">
-              <span>Uploading…</span>
-              <span>{indeterminate ? "…" : `${progress}%`}</span>
+              <span>{indeterminate || progress === 100 ? "Processing…" : "Uploading…"}</span>
+              <span>{indeterminate || progress === 100 ? "" : `${progress}%`}</span>
             </div>
             <div className="progress-bar">
               <div
