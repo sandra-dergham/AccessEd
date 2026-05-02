@@ -1,5 +1,5 @@
 import { useRef, useState } from "react";
-import { uploadPdf, downloadReport } from "../api/upload";
+import { uploadPdf, downloadReport, downloadCorrected } from "../api/upload";
 
 const MAX_BYTES = 10 * 1024 * 1024;
 
@@ -20,8 +20,10 @@ export default function UploadCard() {
 
   const [uploadId, setUploadId] = useState<string | null>(null);
   const [uploadedFilename, setUploadedFilename] = useState<string>("");
-  const [downloading, setDownloading] = useState(false);
   const [downloadError, setDownloadError] = useState<string | null>(null);
+
+  const [downloadingReport, setDownloadingReport] = useState(false);
+  const [downloadingCorrected, setDownloadingCorrected] = useState(false);
 
   function validate(file: File): string | null {
     setSuccess(null);
@@ -73,17 +75,30 @@ export default function UploadCard() {
   }
 
   async function handleDownloadReport() {
-    if (!uploadId) return;
-    setDownloadError(null);
-    setDownloading(true);
-    try {
-      await downloadReport(uploadId, uploadedFilename);
-    } catch (e: any) {
-      setDownloadError(e?.message || "Failed to download report.");
-    } finally {
-      setDownloading(false);
-    }
+  if (!uploadId) return;
+  setDownloadError(null);
+  setDownloadingReport(true);
+  try {
+    await downloadReport(uploadId, uploadedFilename);
+  } catch (e: any) {
+    setDownloadError(e?.message || "Failed to download report.");
+  } finally {
+    setDownloadingReport(false);
   }
+}
+
+async function handleDownloadCorrected() {
+  if (!uploadId) return;
+  setDownloadError(null);
+  setDownloadingCorrected(true);
+  try {
+    await downloadCorrected(uploadId, uploadedFilename);
+  } catch (e: any) {
+    setDownloadError(e?.message || "Failed to download corrected PDF.");
+  } finally {
+    setDownloadingCorrected(false);
+  }
+}
 
   function onDrop(e: React.DragEvent) {
     e.preventDefault();
@@ -161,21 +176,30 @@ export default function UploadCard() {
 
         {uploadId && !uploading && (
           <div className="report-actions">
-            <button
-              className="btn-report"
-              onClick={handleDownloadReport}
-              disabled={downloading}
-              aria-busy={downloading}
-            >
-              {downloading ? "Generating…" : "⬇ Download PDF Report"}
-            </button>
+  <button
+    className="btn-report"
+    onClick={handleDownloadReport}
+    disabled={downloadingReport}
+    aria-busy={downloadingReport}
+  >
+    {downloadingReport ? "Generating…" : "⬇ Download PDF Report"}
+  </button>
 
-            {downloadError && (
-              <div className="alert error" role="alert">
-                {downloadError}
-              </div>
-            )}
-          </div>
+  <button
+    className="btn-report"
+    onClick={handleDownloadCorrected}
+    disabled={downloadingCorrected}
+    aria-busy={downloadingCorrected}
+  >
+    {downloadingCorrected ? "Downloading…" : "⬇ Download Corrected PDF"}
+  </button>
+
+  {downloadError && (
+    <div className="alert error" role="alert">
+      {downloadError}
+    </div>
+  )}
+</div>
         )}
       </div>
     </div>

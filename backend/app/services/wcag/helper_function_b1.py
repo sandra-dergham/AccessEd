@@ -2811,3 +2811,24 @@ def _is_suspicious_alt_text(alt: Optional[str]) -> bool:
         return True
 
     return False
+
+
+#corrector helpers 
+def _blend_toward(rgb: list, target: list, amount: float) -> list:
+        return [round(rgb[i] + (target[i] - rgb[i]) * amount) for i in range(3)]
+
+def _find_accessible_color(fg_rgb: list, bg_rgb: list, target_ratio: float) -> list | None:
+        if contrast_ratio(fg_rgb, bg_rgb) >= target_ratio:
+            return fg_rgb
+        candidates = []
+        for direction in ([0, 0, 0], [255, 255, 255]):
+            for step in range(1, 101):
+                candidate = _blend_toward(fg_rgb, direction, step / 100)
+                if contrast_ratio(candidate, bg_rgb) >= target_ratio:
+                    distance = sum(abs(candidate[i] - fg_rgb[i]) for i in range(3))
+                    candidates.append((distance, candidate))
+                    break
+        if not candidates:
+            return None
+        candidates.sort(key=lambda x: x[0])
+        return candidates[0][1]
