@@ -54,6 +54,7 @@ from typing import Any
 
 import pikepdf
 from .wcag.helper_function_b1 import contrast_ratio,_find_accessible_color
+from app.services.openai_client import get_openai_client
 
 logger = logging.getLogger(__name__)
 
@@ -421,6 +422,21 @@ def fix_1_1_1_image_alt_text(
     fitz_doc.close()
     return results
 
+
+def _set_tooltip_everywhere(field_obj, tooltip: str):
+    field_obj["/TU"] = pikepdf.String(tooltip)
+
+    kids = field_obj.get("/Kids")
+    if isinstance(kids, pikepdf.Array):
+        for kid in kids:
+            try:
+                kid_obj = kid.get_object()
+            except Exception:
+                kid_obj = kid
+
+            if isinstance(kid_obj, pikepdf.Dictionary):
+                kid_obj["/TU"] = pikepdf.String(tooltip)
+
 def fix_1_1_1_control_name(
     pdf: pikepdf.Pdf,
     issues: list[dict],
@@ -541,7 +557,7 @@ def fix_1_1_1_control_name(
                 continue
 
             # ── write /TU into the PDF ───────────────────────────────────
-            field_obj["/TU"] = pikepdf.String(accessible_name)
+            _set_tooltip_everywhere(field_obj, accessible_name)
             results.append(_fixed("1.1.1", issue_key,
                                   f"Set /TU='{accessible_name}' via GPT-4o vision"))
 
@@ -551,7 +567,6 @@ def fix_1_1_1_control_name(
     fitz_doc.close()
     return results
 
-
 def fix_1_4_3_contrast(
     pdf: pikepdf.Pdf,
     issues: list[dict],
@@ -560,12 +575,12 @@ def fix_1_4_3_contrast(
 ) -> list[dict]:
     results = []
     issue_key = "insufficient_text_contrast"
+
     targets = _filter_issues(issues, "1.4.3", issue_key)
     if not targets:
         return results
 
     span_lookup = _build_span_lookup(doc_json)
-
 
     for iss in targets:
         try:
@@ -597,7 +612,6 @@ def fix_1_4_3_contrast(
                 results.append(_skipped("1.4.3", issue_key, "Could not compute accessible color"))
                 continue
 
-            # ── attempt content stream edit ──────────────────────────────
             page_index = span.get("page_index")
             success    = _try_recolor_in_stream(pdf, page_index, fg_rgb, new_fg_rgb)
 
@@ -622,25 +636,18 @@ def fix_1_4_3_contrast(
 
     return results
 
-
 def _try_recolor_in_stream(
     pdf: pikepdf.Pdf,
     page_index: int,
     old_rgb: list[int],
     new_rgb: list[int],
 ) -> bool:
-    """
-    Try to replace the detected old text fill color in the page content stream.
-
-    General rule:
-    - Uses old_rgb from the detector, not hardcoded demo colors.
-    - Replaces only non-stroking RGB text/color operator: rg
-    - Only edits if exactly one safe match is found.
-    - Otherwise returns False so the issue is flagged/manual.
-    """
     try:
         import re
         import zlib
+
+        if page_index is None:
+            return False
 
         page = pdf.pages[page_index]
         contents = page.get("/Contents")
@@ -651,45 +658,37 @@ def _try_recolor_in_stream(
         def to_pdf_float(v: int) -> float:
             return round(v / 255.0, 4)
 
+        def close(a: float, b: float, tolerance: float = 0.01) -> bool:
+            return abs(a - b) <= tolerance
+
         old_vals = [to_pdf_float(v) for v in old_rgb]
         new_vals = [to_pdf_float(v) for v in new_rgb]
 
         new_op = (
             f"{new_vals[0]:.4f} {new_vals[1]:.4f} {new_vals[2]:.4f} rg"
-            .rstrip("0")
-            .encode()
-        )
+        ).encode()
 
-        # General numeric matcher:
-        # Finds: number number number rg
         color_pattern = re.compile(
-            rb"(?P<r>[0-9]*\.?[0-9]+)\s+"
-            rb"(?P<g>[0-9]*\.?[0-9]+)\s+"
-            rb"(?P<b>[0-9]*\.?[0-9]+)\s+rg"
+            rb"(?P<r>(?:\d*\.\d+|\d+))\s+"
+            rb"(?P<g>(?:\d*\.\d+|\d+))\s+"
+            rb"(?P<b>(?:\d*\.\d+|\d+))\s+"
+            rb"rg\b"
         )
-
-        def close(a: float, b: float, tolerance: float = 0.01) -> bool:
-            return abs(a - b) <= tolerance
 
         def read_stream(stream):
-            raw = stream.read_raw_bytes()
-
+            raw = stream.read_bytes()
             try:
-                data = zlib.decompress(raw)
-                return data, True
+                return zlib.decompress(raw), True
             except Exception:
                 return raw, False
 
         def write_stream(stream, data: bytes, was_compressed: bool):
             if was_compressed:
-                stream.write(
-                    zlib.compress(data),
-                    filter=pikepdf.Name("/FlateDecode")
-                )
+                stream.write(zlib.compress(data), filter=pikepdf.Name("/FlateDecode"))
             else:
                 stream.write(data)
 
-        def try_replace(stream) -> bool:
+        def replace_in_stream(stream) -> bool:
             data, was_compressed = read_stream(stream)
 
             matches = []
@@ -709,49 +708,41 @@ def _try_recolor_in_stream(
                 ):
                     matches.append(match)
 
-            # Safety rule:
-            # If the same color appears multiple times, we don't know if all
-            # occurrences belong to the target span.
-            if len(matches) != 1:
+            # ✅ robust: allow multiple matches
+            if not matches:
                 return False
 
-            match = matches[0]
+            new_data = bytearray(data)
 
-            new_data = (
-                data[:match.start()]
-                + new_op
-                + data[match.end():]
-            )
+            # replace all matches safely
+            for match in reversed(matches):
+                new_data[match.start():match.end()] = new_op
 
-            write_stream(stream, new_data, was_compressed)
+            write_stream(stream, bytes(new_data), was_compressed)
             return True
 
+        changed = False
+
         if isinstance(contents, pikepdf.Stream):
-            return try_replace(contents)
+            changed = replace_in_stream(contents)
 
-        if isinstance(contents, pikepdf.Array):
-            changed = False
-
+        elif isinstance(contents, pikepdf.Array):
             for item in contents:
                 try:
                     stream = item.get_object()
                 except Exception:
                     stream = item
 
-                if not isinstance(stream, pikepdf.Stream):
-                    continue
+                if isinstance(stream, pikepdf.Stream):
+                    if replace_in_stream(stream):
+                        changed = True
 
-                if try_replace(stream):
-                    changed = True
-                    break
-
-            return changed
-
-        return False
+        return changed
 
     except Exception as exc:
         logger.debug("_try_recolor_in_stream failed: %s", exc)
         return False
+
 
 def fix_1_4_1_color_only(
     pdf: pikepdf.Pdf,
@@ -976,7 +967,7 @@ def fix_2_5_3_label_in_name(
             results.append(_skipped("2.5.3", issue_key, f"Field '{field_name}' not found in PDF"))
             continue
 
-        field_obj["/TU"] = pikepdf.String(visible_label)
+        _set_tooltip_everywhere(field_obj, visible_label)
 
         results.append(_fixed(
             "2.5.3",
@@ -1405,7 +1396,19 @@ def fix_3_3_2_form_tooltips(
                     results.append(_skipped("3.3.2", issue_key,
                                             f"Field '{field_name}' not found in AcroForm"))
                     continue
-                field_obj["/TU"] = pikepdf.String(label)
+                existing_tu = field_obj.get("/TU")
+
+
+                if existing_tu is not None and str(existing_tu).strip():
+                    results.append(_skipped(
+                             "3.3.2",
+                            issue_key,
+                             f"Already has /TU='{existing_tu}', not overwriting"
+                                ))
+                    continue
+
+
+                _set_tooltip_everywhere(field_obj, label)
                 results.append(_fixed("3.3.2", issue_key,
                                       f"Set /TU='{label}' on field '{field_name}'"))
 
@@ -1433,8 +1436,11 @@ def fix_3_3_2_form_tooltips(
                         ft_val = str(obj.get("/FT", "")).lstrip("/")
                         tu_val = obj.get("/TU")
 
-                        if t_val is None and ft_val == field_type and tu_val is None:
-                            obj["/TU"] = pikepdf.String(label)
+                        if t_val is None and ft_val == field_type:
+                            if tu_val is not None and str(tu_val).strip():
+                                continue
+
+                            _set_tooltip_everywhere(obj, label)
                             matched = True
                             break
                     except Exception:

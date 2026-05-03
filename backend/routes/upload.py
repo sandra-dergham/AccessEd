@@ -7,6 +7,8 @@ import json
 import io
 import logging
 from app.services.corrector import apply_corrections
+from app.services.annotator import annotate_pdf
+
 
 # Ensure backend/ is on the path so app.services.wcag resolves correctly
 _BACKEND_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
@@ -95,8 +97,7 @@ async def upload_pdf(background_tasks: BackgroundTasks, file: UploadFile = File(
         _cleanup(out_path)
         raise HTTPException(status_code=500, detail=f"Failed to save JSON: {e}")
 
-    # ── Step 3: Delete original PDF now that JSON is saved ────────────
-    _cleanup(out_path)
+    
 
     # ── Step 4: Run WCAG detector ─────────────────────────────────────
     try:
@@ -137,7 +138,7 @@ async def upload_pdf(background_tasks: BackgroundTasks, file: UploadFile = File(
     corrected_path = os.path.join(UPLOAD_DIR, f"{upload_id}_corrected.pdf")
     try:
         correction_result = apply_corrections(
-            original_pdf_path=pdf_out_path,
+            original_pdf_path=out_path,
             issues=issues,
             doc_json=doc_json,
             output_path=corrected_path,
@@ -145,6 +146,17 @@ async def upload_pdf(background_tasks: BackgroundTasks, file: UploadFile = File(
     except Exception as e:
         correction_result = {"status": "failed", "error": str(e)}
         corrected_path = None
+        # annotate the original pdf 
+    annotated_path = os.path.join(UPLOAD_DIR, f"{upload_id}_annotated.pdf")
+    annotate_pdf(
+            original_pdf_path=out_path,
+            issues=issues,
+            doc_json=doc_json,
+            output_path=annotated_path,
+        )
+        
+        # delete pdf  ────────────
+    _cleanup(out_path)
 
     # ── Cleanup: delete JSON files now, keep PDFs for download ────────
     if background_tasks is not None:
@@ -158,6 +170,7 @@ async def upload_pdf(background_tasks: BackgroundTasks, file: UploadFile = File(
         "report":            report,
         "pdf_report_path":   pdf_out_path,
         "corrected_path":    corrected_path,
+        "annotated_path":    annotated_path,
     }
 
 
@@ -196,10 +209,39 @@ async def download_corrected(upload_id: str, background_tasks: BackgroundTasks):
             detail="Corrected PDF not found. The upload ID may be invalid or the file has expired.",
         )
 
+    with open(corrected_path, "rb") as f:
+        pdf_bytes = f.read()
+
     background_tasks.add_task(_cleanup, corrected_path)
 
-    return FileResponse(
-        path=corrected_path,
+    return StreamingResponse(
+        io.BytesIO(pdf_bytes),
         media_type="application/pdf",
-        filename=f"corrected-{upload_id}.pdf",
+        headers={
+            "Content-Disposition": f"attachment; filename=corrected-{upload_id}.pdf"
+        },
+    )
+
+
+@router.get("/uploads/{upload_id}/annotated")
+async def download_annotated(upload_id: str, background_tasks: BackgroundTasks):
+    annotated_path = os.path.join(UPLOAD_DIR, f"{upload_id}_annotated.pdf")
+
+    if not os.path.exists(annotated_path):
+        raise HTTPException(
+            status_code=404,
+            detail="Annotated PDF not found. The upload ID may be invalid or the file has expired.",
+        )
+
+    with open(annotated_path, "rb") as f:
+        pdf_bytes = f.read()
+
+    background_tasks.add_task(_cleanup, annotated_path)
+
+    return StreamingResponse(
+        io.BytesIO(pdf_bytes),
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": f"attachment; filename=annotated-{upload_id}.pdf"
+        },
     )
