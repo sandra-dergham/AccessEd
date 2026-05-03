@@ -128,3 +128,34 @@ export async function downloadCorrected(
 
   setTimeout(() => URL.revokeObjectURL(url), 5000);
 }
+
+export async function downloadAnnotated(
+  uploadId: string,
+  originalFilename: string
+): Promise<void> {
+  const response = await fetch(
+    `${import.meta.env.VITE_API_URL}/api/uploads/${uploadId}/annotated`
+  );
+
+  if (!response.ok) {
+    let detail = "Failed to download annotated PDF.";
+    try {
+      const err = await response.json();
+      detail = err.detail || detail;
+    } catch {}
+    throw new Error(detail);
+  }
+
+  const blob = await response.blob();
+  const url = URL.createObjectURL(blob);
+
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `annotated-${originalFilename.replace(/\.pdf$/i, "")}.pdf`;
+
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+
+  setTimeout(() => URL.revokeObjectURL(url), 5000);
+}

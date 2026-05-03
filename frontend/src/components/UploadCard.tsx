@@ -1,5 +1,5 @@
 import { useRef, useState } from "react";
-import { uploadPdf, downloadReport, downloadCorrected } from "../api/upload";
+import { uploadPdf, downloadReport, downloadCorrected ,downloadAnnotated} from "../api/upload";
 
 const MAX_BYTES = 10 * 1024 * 1024;
 
@@ -23,6 +23,7 @@ export default function UploadCard() {
 
   const [downloadingReport, setDownloadingReport] = useState(false);
   const [downloadingCorrected, setDownloadingCorrected] = useState(false);
+    const [downloadingAnnotated, setDownloadingAnnotated] = useState(false);
 
   function validate(file: File): string | null {
     const isPdf =
@@ -94,6 +95,19 @@ export default function UploadCard() {
       setDownloadError(e?.message || "Failed to download corrected PDF.");
     } finally {
       setDownloadingCorrected(false);
+    }
+  }
+
+  async function handleDownloadAnnotated() {
+    if (!uploadId) return;
+    setDownloadError(null);
+    setDownloadingAnnotated(true);
+    try {
+      await downloadAnnotated(uploadId, uploadedFilename);
+    } catch (e: any) {
+      setDownloadError(e?.message || "Failed to download annotated PDF.");
+    } finally {
+      setDownloadingAnnotated(false);
     }
   }
 
@@ -226,6 +240,19 @@ export default function UploadCard() {
                   <path d="M7 1v8M4 6l3 3 3-3M2 11h10" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
                 </svg>
                 {downloadingCorrected ? "Downloading…" : "Download Corrected PDF"}
+              </button>
+
+              <button
+                className="btn-download"
+                onClick={handleDownloadAnnotated}
+                disabled={downloadingAnnotated}
+                aria-busy={downloadingAnnotated}
+                aria-label="Download annotated PDF with accessibility issues highlighted"
+              >
+                <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true">
+                  <path d="M7 1v8M4 6l3 3 3-3M2 11h10" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+                </svg>
+                {downloadingAnnotated ? "Downloading…" : "Download Annotated PDF"}
               </button>
             </div>
 
