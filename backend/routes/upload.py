@@ -148,7 +148,7 @@ async def upload_pdf(file: UploadFile = File(...), background_tasks: BackgroundT
 
     # ── Cleanup: delete JSON files now, keep PDFs for download ────────
     if background_tasks is not None:
-        background_tasks.add_task(_cleanup, json_out_path, report_json_path)
+        background_tasks.add_task(_cleanup, json_out_path)
 
     return {
         "upload_id":         upload_id,
