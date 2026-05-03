@@ -12,7 +12,6 @@ export default function UploadCard() {
 
   const [dragOver, setDragOver] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [success, setSuccess] = useState<string | null>(null);
 
   const [uploading, setUploading] = useState(false);
   const [progress, setProgress] = useState<number>(0);
@@ -26,7 +25,6 @@ export default function UploadCard() {
   const [downloadingCorrected, setDownloadingCorrected] = useState(false);
 
   function validate(file: File): string | null {
-    setSuccess(null);
     const isPdf =
       file.type === "application/pdf" ||
       file.name.toLowerCase().endsWith(".pdf");
@@ -66,7 +64,6 @@ export default function UploadCard() {
 
       setUploadId(result.upload_id);
       setUploadedFilename(result.original_filename);
-      setSuccess(`Analysed successfully: ${file.name}`);
     } catch (e: any) {
       setError(e?.detail || "Upload failed.");
     } finally {
