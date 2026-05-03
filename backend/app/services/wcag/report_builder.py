@@ -195,6 +195,103 @@ def add_score_block(pdf: FPDF, score: dict):
     add_summary_row(pdf, score)
 
     pdf.set_text_color(0, 0, 0)
+
+def add_scoring_methodology(pdf: FPDF):
+    add_section_title(pdf, "How This Score Is Calculated")
+
+    pdf.set_font("Helvetica", "", 10)
+    pdf.set_text_color(71, 85, 105)
+    pdf.multi_cell(0, 6,
+        "The accessibility score (0-100) reflects the percentage of evaluable WCAG 2.1 "
+        "criteria that your document satisfies, weighted by violation severity. "
+        "Criteria marked as Not Applicable or Needs Review are excluded from the calculation."
+    )
+    pdf.ln(4)
+
+    left = pdf.l_margin
+    total_width = pdf.w - pdf.l_margin - pdf.r_margin
+    gap = 4
+    col_w = (total_width - gap * 3) / 4
+
+    rows = [
+        ("PASS",         "1.00", "No violation detected. Full credit.",          (236, 253, 245), (5, 150, 105)),
+        ("LOW",          "0.75", "Minor gap, mostly compliant.",                 (254, 252, 232), (161, 98, 7)),
+        ("MEDIUM",       "0.25", "Confirmed violation, moderate AT impact.",     (255, 237, 213), (194, 65, 12)),
+        ("HIGH",         "0.00", "Confirmed violation, severe AT impact.",       (254, 226, 226), (185, 28, 28)),
+    ]
+
+    # Header
+    y = pdf.get_y()
+    headers = ["Severity", "Weight", "Meaning", ""]
+    pdf.set_font("Helvetica", "B", 9)
+    pdf.set_text_color(71, 85, 105)
+    for i, h in enumerate(headers[:3]):
+        pdf.set_xy(left + i * (col_w + gap), y)
+        pdf.cell(col_w, 6, h)
+    pdf.ln(7)
+
+    for label, weight, meaning, bg, fg in rows:
+        y = pdf.get_y()
+
+        # Badge
+        pdf.set_fill_color(*bg)
+        pdf.set_draw_color(226, 232, 240)
+        pdf.rect(left, y + 1, col_w, 7, style="DF")
+        pdf.set_xy(left, y + 2)
+        pdf.set_font("Helvetica", "B", 8)
+        pdf.set_text_color(*fg)
+        pdf.cell(col_w, 5, label, align="C")
+
+        # Weight
+        pdf.set_xy(left + col_w + gap, y + 2)
+        pdf.set_font("Helvetica", "B", 10)
+        pdf.set_text_color(15, 23, 42)
+        pdf.cell(col_w, 5, weight, align="C")
+
+        # Meaning
+        pdf.set_xy(left + 2 * (col_w + gap), y + 2)
+        pdf.set_font("Helvetica", "", 9)
+        pdf.set_text_color(71, 85, 105)
+        pdf.cell(col_w * 2, 5, meaning)
+
+        pdf.ln(9)
+
+    # Grade scale
+    pdf.ln(2)
+    pdf.set_font("Helvetica", "B", 10)
+    pdf.set_text_color(15, 23, 42)
+    pdf.cell(0, 6, "Grade Scale")
+    pdf.ln(7)
+
+    grades = [
+        ("A", "90-100", (236, 253, 245), (5, 150, 105)),
+        ("B", "75-89",  (239, 246, 255), (37, 99, 235)),
+        ("C", "50-74",  (254, 252, 232), (161, 98, 7)),
+        ("D", "25-49",  (255, 237, 213), (194, 65, 12)),
+        ("F", "0-24",   (254, 226, 226), (185, 28, 28)),
+    ]
+
+    grade_w = (total_width - gap * 4) / 5
+    y = pdf.get_y()
+    for i, (grade, rng, bg, fg) in enumerate(grades):
+        x = left + i * (grade_w + gap)
+        pdf.set_fill_color(*bg)
+        pdf.set_draw_color(226, 232, 240)
+        pdf.rect(x, y, grade_w, 16, style="DF")
+
+        pdf.set_xy(x, y + 2)
+        pdf.set_font("Helvetica", "B", 12)
+        pdf.set_text_color(*fg)
+        pdf.cell(grade_w, 6, grade, align="C")
+
+        pdf.set_xy(x, y + 9)
+        pdf.set_font("Helvetica", "", 8)
+        pdf.set_text_color(*fg)
+        pdf.cell(grade_w, 4, rng, align="C")
+
+    pdf.set_text_color(0, 0, 0)
+    pdf.set_y(y + 22)
+
 def add_overview(pdf: FPDF, meta: dict):
     add_section_title(pdf, "Document Overview")
 
