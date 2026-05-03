@@ -116,7 +116,7 @@ export default function UploadCard() {
         <div className="info-box" aria-labelledby="info-heading">
           <p className="info-what">
             <strong id="info-heading">What is AccessEd?</strong> AccessEd is a
-            PDF accessibility checker and auto-corrector built on WCAG 2.1
+            PDF accessibility checker and semi-automated corrector built on WCAG 2.1
             guidelines. It detects violations such as missing alt text,
             insufficient contrast, unlabelled form fields, and more — then
             automatically fixes what it can and flags the rest for manual review.
@@ -172,12 +172,6 @@ export default function UploadCard() {
           </div>
         )}
 
-        {success && (
-          <div className="alert success" role="status" aria-live="polite">
-            {success}
-          </div>
-        )}
-
         {uploading && (
           <div
             className="progress-wrap"
@@ -198,26 +192,45 @@ export default function UploadCard() {
         )}
 
         {uploadId && !uploading && (
-          <div className="report-actions">
-            <button
-              className="btn-report"
-              onClick={handleDownloadReport}
-              disabled={downloadingReport}
-              aria-busy={downloadingReport}
-              aria-label="Download accessibility report as PDF"
-            >
-              {downloadingReport ? "Generating…" : "⬇ Download PDF Report"}
-            </button>
+          <div className="results-section">
+            <div className="results-success">
+              <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+                <circle cx="8" cy="8" r="7" stroke="#43d17d" strokeWidth="1.5"/>
+                <path d="M5 8.5l2 2 4-4" stroke="#43d17d" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+              </svg>
+              <div>
+                <p className="results-success-title">Analysed successfully</p>
+                <p className="results-success-file">{uploadedFilename}</p>
+              </div>
+            </div>
 
-            <button
-              className="btn-report"
-              onClick={handleDownloadCorrected}
-              disabled={downloadingCorrected}
-              aria-busy={downloadingCorrected}
-              aria-label="Download corrected PDF with accessibility fixes applied"
-            >
-              {downloadingCorrected ? "Downloading…" : "⬇ Download Corrected PDF"}
-            </button>
+            <div className="results-actions">
+              <button
+                className="btn-download"
+                onClick={handleDownloadReport}
+                disabled={downloadingReport}
+                aria-busy={downloadingReport}
+                aria-label="Download accessibility report as PDF"
+              >
+                <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true">
+                  <path d="M7 1v8M4 6l3 3 3-3M2 11h10" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+                </svg>
+                {downloadingReport ? "Generating…" : "Download PDF Report"}
+              </button>
+
+              <button
+                className="btn-download"
+                onClick={handleDownloadCorrected}
+                disabled={downloadingCorrected}
+                aria-busy={downloadingCorrected}
+                aria-label="Download corrected PDF with accessibility fixes applied"
+              >
+                <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true">
+                  <path d="M7 1v8M4 6l3 3 3-3M2 11h10" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+                </svg>
+                {downloadingCorrected ? "Downloading…" : "Download Corrected PDF"}
+              </button>
+            </div>
 
             {downloadError && (
               <div className="alert error" role="alert">

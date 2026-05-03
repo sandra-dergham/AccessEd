@@ -362,53 +362,77 @@ a {
 
 /* ===== Download Report Button ===== */
 
-.btn-report {
-  margin-top: 14px;
-  padding: 14px 20px;
-  background: linear-gradient(
-    135deg,
-    rgba(67, 209, 125, 0.25),
-    rgba(67, 209, 125, 0.15)
-  );
-  color: var(--text);
-  border: 1px solid rgba(67, 209, 125, 0.5);
-  border-radius: 12px;
-  font-size: 15px;
-  font-weight: 600;
-  cursor: pointer;
-  backdrop-filter: blur(6px);
-  transition: all 0.25s ease;
-  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.3);
-}
-
-/* Hover */
-.btn-report:hover:not(:disabled) {
-  background: linear-gradient(
-    135deg,
-    rgba(67, 209, 125, 0.35),
-    rgba(67, 209, 125, 0.2)
-  );
-  transform: translateY(-2px);
-  border-color: var(--success);
-}
-
-/* Click */
-.btn-report:active:not(:disabled) {
-  transform: scale(0.97);
-}
-
-/* Disabled */
-.btn-report:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-  background: rgba(255, 255, 255, 0.05);
-  border-color: var(--border);
-  
-}
-.report-actions{
+.results-section {
+  margin-top: 16px;
   display: flex;
-  gap: 15px; 
-  flex-wrap: wrap; 
+  flex-direction: column;
+  gap: 12px;
+}
+
+.results-success {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 14px 16px;
+  border-radius: 12px;
+  border: 1px solid rgba(67, 209, 125, 0.25);
+  background: rgba(67, 209, 125, 0.07);
+}
+
+.results-success-title {
+  font-size: 14px;
+  font-weight: 500;
+  color: #43d17d;
+  margin: 0;
+}
+
+.results-success-file {
+  font-size: 12px;
+  color: var(--muted);
+  margin: 3px 0 0;
+}
+
+.results-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.btn-download {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 13px 16px;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--text);
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 150ms ease, border-color 150ms ease, transform 120ms ease;
+}
+
+.btn-download:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.08);
+  border-color: var(--border-strong);
+}
+
+.btn-download:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px rgba(122, 162, 255, 0.35);
+  border-color: rgba(122, 162, 255, 0.8);
+}
+
+.btn-download:active:not(:disabled) {
+  transform: scale(0.98);
+}
+
+.btn-download:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
 }
 
 .info-box {

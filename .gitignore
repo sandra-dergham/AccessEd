@@ -21,3 +21,6 @@ tmp_uploads/
 .DS_Store
 Thumbs.db
 .vscode/
+
+.env.development
+.env.production
