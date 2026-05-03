@@ -38,7 +38,7 @@ def _cleanup(*paths):
 
 
 @router.post("/upload")
-async def upload_pdf(file: UploadFile = File(...), background_tasks: BackgroundTasks):
+async def upload_pdf(background_tasks: BackgroundTasks, file: UploadFile = File(...)):
     if not file or not file.filename:
         raise HTTPException(status_code=400, detail="No file provided.")
 
