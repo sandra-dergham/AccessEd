@@ -1,10 +1,11 @@
-from fastapi import APIRouter, UploadFile, File, HTTPException
+from fastapi import APIRouter, UploadFile, File, HTTPException, BackgroundTasks
 from fastapi.responses import StreamingResponse, FileResponse
 from uuid import uuid4
 import os
 import sys
 import json
 import io
+import logging
 from app.services.corrector import apply_corrections
 
 # Ensure backend/ is on the path so app.services.wcag resolves correctly
@@ -13,6 +14,7 @@ if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 MAX_BYTES = 10 * 1024 * 1024  # 10 MB
 UPLOAD_DIR = os.path.join(os.path.dirname(__file__), "..", "tmp_uploads")
@@ -25,8 +27,18 @@ def _looks_like_pdf(upload: UploadFile) -> bool:
     return ct_ok or name_ok
 
 
+def _cleanup(*paths):
+    for path in paths:
+        try:
+            if path and os.path.exists(path):
+                os.remove(path)
+                logger.info("Deleted temp file: %s", path)
+        except Exception as e:
+            logger.warning("Could not delete %s: %s", path, e)
+
+
 @router.post("/upload")
-async def upload_pdf(file: UploadFile = File(...)):
+async def upload_pdf(file: UploadFile = File(...), background_tasks: BackgroundTasks = None):
     if not file or not file.filename:
         raise HTTPException(status_code=400, detail="No file provided.")
 
@@ -35,8 +47,6 @@ async def upload_pdf(file: UploadFile = File(...)):
 
     upload_id = str(uuid4())
     out_path  = os.path.join(UPLOAD_DIR, f"{upload_id}.pdf")
-    print("UPLOAD_DIR =", os.path.abspath(UPLOAD_DIR))
-    print("OUT_PATH   =", os.path.abspath(out_path))
 
     total      = 0
     chunk_size = 1024 * 1024  # 1 MB
@@ -67,127 +77,106 @@ async def upload_pdf(file: UploadFile = File(...)):
             except OSError:
                 pass
             raise HTTPException(status_code=400, detail="Invalid PDF file.")
-        
+
     # ── Step 1: Parse PDF ─────────────────────────────────────────────
     try:
         from app.services.parsing import extract_document_json
         doc_json = extract_document_json(out_path)
     except Exception as e:
-       raise HTTPException(
-        status_code=500,
-        detail=f"Parsing failed: {e}"
-    )
+        _cleanup(out_path)
+        raise HTTPException(status_code=500, detail=f"Parsing failed: {e}")
 
-   # ── Step 2: Save parsed JSON ──────────────────────────────
-   # will be deleted later
+    # ── Step 2: Save parsed JSON ──────────────────────────────────────
+    json_out_path = os.path.join(UPLOAD_DIR, f"{upload_id}.json")
     try:
-        json_out_path = os.path.join(UPLOAD_DIR, f"{upload_id}.json")
         with open(json_out_path, "w", encoding="utf-8") as f:
-             json.dump(doc_json, f, ensure_ascii=False, indent=2)
+            json.dump(doc_json, f, ensure_ascii=False, indent=2)
     except Exception as e:
-        raise HTTPException(
-        status_code=500,
-        detail=f"Failed to save JSON: {e}"
-    )
+        _cleanup(out_path)
+        raise HTTPException(status_code=500, detail=f"Failed to save JSON: {e}")
 
-    # ── Step 3: Run WCAG detector ─────────────────────────────────────────────
+    # ── Step 3: Delete original PDF now that JSON is saved ────────────
+    _cleanup(out_path)
+
+    # ── Step 4: Run WCAG detector ─────────────────────────────────────
     try:
         from app.services.wcag.detector import run_wcag_detector
         issues = run_wcag_detector(doc_json)
     except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"WCAG detection failed: {e}"
-        )
+        _cleanup(json_out_path)
+        raise HTTPException(status_code=500, detail=f"WCAG detection failed: {e}")
 
-    # ── Step 4: Build report ──────────────────────────────────────────────────
+    # ── Step 5: Build report ──────────────────────────────────────────
     try:
         from app.services.wcag.report_builder import build_report
         document_meta = doc_json.get("document", {}).get("metadata", {})
         report = build_report(document_meta, issues)
     except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Report building failed: {e}"
-        )
-    # ── Step 4b: Save report JSON to disk ─────────────────────────────────────
+        _cleanup(json_out_path)
+        raise HTTPException(status_code=500, detail=f"Report building failed: {e}")
+
+    # ── Step 5b: Save report JSON ─────────────────────────────────────
     report_json_path = os.path.join(UPLOAD_DIR, f"{upload_id}_report.json")
     try:
         with open(report_json_path, "w", encoding="utf-8") as f:
             json.dump(report, f)
     except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Failed to save report: {e}"
-        )
+        _cleanup(json_out_path)
+        raise HTTPException(status_code=500, detail=f"Failed to save report: {e}")
 
-# ── Step 5: Generate PDF report ───────────────────────────────────
+    # ── Step 6: Generate PDF report ───────────────────────────────────
+    pdf_out_path = os.path.join(UPLOAD_DIR, f"{upload_id}_report.pdf")
     try:
         from app.services.wcag.report_builder import build_pdf_report
-        pdf_out_path = os.path.join(UPLOAD_DIR, f"{upload_id}_report.pdf")
-        build_pdf_report(report,pdf_out_path)
+        build_pdf_report(report, pdf_out_path)
     except Exception as e:
-        raise HTTPException(
-            status_code=500,
-        detail=f"PDF generation failed: {e}"
-    )
+        _cleanup(json_out_path, report_json_path)
+        raise HTTPException(status_code=500, detail=f"PDF generation failed: {e}")
 
-    # ── Step 6: Apply corrections and save corrected PDF ──────────────────
+    # ── Step 7: Apply corrections ─────────────────────────────────────
+    corrected_path = os.path.join(UPLOAD_DIR, f"{upload_id}_corrected.pdf")
     try:
-        corrected_path = os.path.join(UPLOAD_DIR, f"{upload_id}_corrected.pdf")
-
         correction_result = apply_corrections(
-        original_pdf_path=out_path,
-        issues=issues,
-        doc_json=doc_json,
-        output_path=corrected_path,
-    )
-
+            original_pdf_path=pdf_out_path,
+            issues=issues,
+            doc_json=doc_json,
+            output_path=corrected_path,
+        )
     except Exception as e:
         correction_result = {"status": "failed", "error": str(e)}
         corrected_path = None
-    # ── Step 6: Return response ───────────────────────────────────────────────
+
+    # ── Cleanup: delete JSON files now, keep PDFs for download ────────
+    if background_tasks is not None:
+        background_tasks.add_task(_cleanup, json_out_path)
+
     return {
         "upload_id":         upload_id,
         "original_filename": file.filename,
         "size_bytes":        total,
         "status":            "analysed",
         "report":            report,
-        "pdf_report_path": pdf_out_path,
-        "corrected_path": corrected_path,
+        "pdf_report_path":   pdf_out_path,
+        "corrected_path":    corrected_path,
     }
 
-@router.get("/uploads/{upload_id}/report")
-async def download_report(upload_id: str):
-    # ── Step 1: Load the saved report JSON ────────────────────────────────────
-    report_json_path = os.path.join(UPLOAD_DIR, f"{upload_id}_report.json")
 
-    if not os.path.exists(report_json_path):
+@router.get("/uploads/{upload_id}/report")
+async def download_report(upload_id: str, background_tasks: BackgroundTasks):
+    report_json_path = os.path.join(UPLOAD_DIR, f"{upload_id}_report.json")
+    pdf_out_path     = os.path.join(UPLOAD_DIR, f"{upload_id}_report.pdf")
+
+    if not os.path.exists(pdf_out_path):
         raise HTTPException(
             status_code=404,
             detail="Report not found. The upload ID may be invalid or the file has expired."
         )
 
-    try:
-        with open(report_json_path, "r", encoding="utf-8") as f:
-            report_json = json.load(f)
-    except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Failed to read report: {e}"
-        )
+    with open(pdf_out_path, "rb") as f:
+        pdf_bytes = f.read()
 
-    # ── Step 2: Generate the PDF ──────────────────────────────────────────────
-    try:
-        from app.services.wcag.report_builder import build_report_pdf
-        pdf_bytes = build_report_pdf(report_json)
-    except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Failed to generate PDF report: {e}"
-        )
+    background_tasks.add_task(_cleanup, pdf_out_path, report_json_path)
 
-    # ── Step 3: Return as a downloadable PDF file ─────────────────────────────
     return StreamingResponse(
         io.BytesIO(pdf_bytes),
         media_type="application/pdf",
@@ -195,10 +184,10 @@ async def download_report(upload_id: str):
             "Content-Disposition": f"attachment; filename=report_{upload_id}.pdf"
         },
     )
-    
+
 
 @router.get("/uploads/{upload_id}/corrected")
-async def download_corrected(upload_id: str):
+async def download_corrected(upload_id: str, background_tasks: BackgroundTasks):
     corrected_path = os.path.join(UPLOAD_DIR, f"{upload_id}_corrected.pdf")
 
     if not os.path.exists(corrected_path):
@@ -206,6 +195,8 @@ async def download_corrected(upload_id: str):
             status_code=404,
             detail="Corrected PDF not found. The upload ID may be invalid or the file has expired.",
         )
+
+    background_tasks.add_task(_cleanup, corrected_path)
 
     return FileResponse(
         path=corrected_path,

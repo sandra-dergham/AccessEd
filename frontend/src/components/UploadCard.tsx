@@ -75,30 +75,30 @@ export default function UploadCard() {
   }
 
   async function handleDownloadReport() {
-  if (!uploadId) return;
-  setDownloadError(null);
-  setDownloadingReport(true);
-  try {
-    await downloadReport(uploadId, uploadedFilename);
-  } catch (e: any) {
-    setDownloadError(e?.message || "Failed to download report.");
-  } finally {
-    setDownloadingReport(false);
+    if (!uploadId) return;
+    setDownloadError(null);
+    setDownloadingReport(true);
+    try {
+      await downloadReport(uploadId, uploadedFilename);
+    } catch (e: any) {
+      setDownloadError(e?.message || "Failed to download report.");
+    } finally {
+      setDownloadingReport(false);
+    }
   }
-}
 
-async function handleDownloadCorrected() {
-  if (!uploadId) return;
-  setDownloadError(null);
-  setDownloadingCorrected(true);
-  try {
-    await downloadCorrected(uploadId, uploadedFilename);
-  } catch (e: any) {
-    setDownloadError(e?.message || "Failed to download corrected PDF.");
-  } finally {
-    setDownloadingCorrected(false);
+  async function handleDownloadCorrected() {
+    if (!uploadId) return;
+    setDownloadError(null);
+    setDownloadingCorrected(true);
+    try {
+      await downloadCorrected(uploadId, uploadedFilename);
+    } catch (e: any) {
+      setDownloadError(e?.message || "Failed to download corrected PDF.");
+    } finally {
+      setDownloadingCorrected(false);
+    }
   }
-}
 
   function onDrop(e: React.DragEvent) {
     e.preventDefault();
@@ -108,16 +108,31 @@ async function handleDownloadCorrected() {
   }
 
   return (
-    <div className="container">
+    <main className="container" aria-label="AccessEd PDF accessibility checker">
       <div className="card">
         <h1 className="title">AccessEd</h1>
         <p className="subtitle">Upload a PDF and check its accessibility</p>
+
+        <div className="info-box" aria-labelledby="info-heading">
+          <p className="info-what">
+            <strong id="info-heading">What is AccessEd?</strong> AccessEd is a
+            PDF accessibility checker and semi-automated corrector built on WCAG 2.1
+            guidelines. It detects violations such as missing alt text,
+            insufficient contrast, unlabelled form fields, and more — then
+            automatically fixes what it can and flags the rest for manual review.
+          </p>
+          <p className="info-privacy">
+            🔒 <strong>Your privacy is protected.</strong> Uploaded files are
+            processed in memory and deleted immediately after analysis. We do
+            not store, log, or share your documents.
+          </p>
+        </div>
 
         <div
           className={`dropzone ${dragOver ? "dragover" : ""}`}
           role="button"
           tabIndex={0}
-          aria-label="Upload PDF"
+          aria-label="Upload PDF file"
           onClick={() => inputRef.current?.click()}
           onDragOver={(e) => {
             e.preventDefault();
@@ -157,13 +172,15 @@ async function handleDownloadCorrected() {
           </div>
         )}
 
-        {success && <div className="alert success">{success}</div>}
-
         {uploading && (
-          <div className="progress-wrap">
+          <div
+            className="progress-wrap"
+            aria-live="polite"
+            aria-label="Upload progress"
+          >
             <div className="progress-row">
-              <span>Uploading…</span>
-              <span>{indeterminate ? "…" : `${progress}%`}</span>
+              <span>{indeterminate || progress === 100 ? "Processing…" : "Uploading…"}</span>
+              <span>{indeterminate || progress === 100 ? "" : `${progress}%`}</span>
             </div>
             <div className="progress-bar">
               <div
@@ -175,33 +192,54 @@ async function handleDownloadCorrected() {
         )}
 
         {uploadId && !uploading && (
-          <div className="report-actions">
-  <button
-    className="btn-report"
-    onClick={handleDownloadReport}
-    disabled={downloadingReport}
-    aria-busy={downloadingReport}
-  >
-    {downloadingReport ? "Generating…" : "⬇ Download PDF Report"}
-  </button>
+          <div className="results-section">
+            <div className="results-success">
+              <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+                <circle cx="8" cy="8" r="7" stroke="#43d17d" strokeWidth="1.5"/>
+                <path d="M5 8.5l2 2 4-4" stroke="#43d17d" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+              </svg>
+              <div>
+                <p className="results-success-title">Analysed successfully</p>
+                <p className="results-success-file">{uploadedFilename}</p>
+              </div>
+            </div>
 
-  <button
-    className="btn-report"
-    onClick={handleDownloadCorrected}
-    disabled={downloadingCorrected}
-    aria-busy={downloadingCorrected}
-  >
-    {downloadingCorrected ? "Downloading…" : "⬇ Download Corrected PDF"}
-  </button>
+            <div className="results-actions">
+              <button
+                className="btn-download"
+                onClick={handleDownloadReport}
+                disabled={downloadingReport}
+                aria-busy={downloadingReport}
+                aria-label="Download accessibility report as PDF"
+              >
+                <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true">
+                  <path d="M7 1v8M4 6l3 3 3-3M2 11h10" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+                </svg>
+                {downloadingReport ? "Generating…" : "Download Accessibility Report"}
+              </button>
 
-  {downloadError && (
-    <div className="alert error" role="alert">
-      {downloadError}
-    </div>
-  )}
-</div>
+              <button
+                className="btn-download"
+                onClick={handleDownloadCorrected}
+                disabled={downloadingCorrected}
+                aria-busy={downloadingCorrected}
+                aria-label="Download corrected PDF with accessibility fixes applied"
+              >
+                <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true">
+                  <path d="M7 1v8M4 6l3 3 3-3M2 11h10" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+                </svg>
+                {downloadingCorrected ? "Downloading…" : "Download Corrected PDF"}
+              </button>
+            </div>
+
+            {downloadError && (
+              <div className="alert error" role="alert">
+                {downloadError}
+              </div>
+            )}
+          </div>
         )}
       </div>
-    </div>
+    </main>
   );
 }

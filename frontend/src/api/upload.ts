@@ -20,7 +20,7 @@ export function uploadPdf(
     formData.append("file", file);
 
     const xhr = new XMLHttpRequest();
-    xhr.open("POST", "https://accessed-c79k.onrender.com/api/upload");
+    xhr.open("POST", `${import.meta.env.VITE_API_URL}/api/upload`);
 
     const noProgressTimer = window.setTimeout(() => {
       onProgress({ type: "indeterminate" });
@@ -71,7 +71,7 @@ export async function downloadReport(
   originalFilename: string
 ): Promise<void> {
   const response = await fetch(
-    `https://accessed-c79k.onrender.com/api/uploads/${uploadId}/report`
+    `${import.meta.env.VITE_API_URL}/api/uploads/${uploadId}/report`
   );
 
   if (!response.ok) {
@@ -101,7 +101,7 @@ export async function downloadCorrected(
   originalFilename: string
 ): Promise<void> {
   const response = await fetch(
-    `https://accessed-c79k.onrender.com/api/uploads/${uploadId}/corrected`
+    `${import.meta.env.VITE_API_URL}/api/uploads/${uploadId}/corrected`
   );
 
   if (!response.ok) {
