@@ -5,7 +5,7 @@ from langdetect import detect, LangDetectException
 from pdfminer.high_level import extract_pages
 from pdfminer.layout import LTTextBoxHorizontal, LTTextLineHorizontal, LTChar, LTAnno
 
-import fitz  # PyMuPDF
+import fitz  
 import pikepdf
 
 from PIL import Image
@@ -29,9 +29,6 @@ from .wcag.helper_function_b1 import (
 )
 
 
-# -----------------------------
-# Helpers
-# -----------------------------
 
 def sha256_file(path: str) -> str:
     data = Path(path).read_bytes()
@@ -276,7 +273,7 @@ def compute_contrast_for_spans(
 
             fg   = sp.get("color", {}).get("fill_rgb", [0, 0, 0])
             font = sp.get("font", {})
-            large = is_large_text(font)   # ← fixed: was is_large_text(font_size)
+            large = is_large_text(font)   
 
             bg = estimate_background_rgb_for_bbox(page, bbox, scale=scale, grid=8)
             if bg is None:
@@ -302,10 +299,6 @@ def compute_contrast_for_spans(
                 "large_text_assumed": large
             }
 
-
-# -----------------------------
-# Phase 1: PyMuPDF extractors
-# -----------------------------
 
 def extract_form_fields(page: fitz.Page, page_index: int):
     """
@@ -511,10 +504,6 @@ def extract_bookmarks(doc: fitz.Document):
     return bookmarks
 
 
-# -----------------------------
-# Phase 2: pdfminer blocks + reading order
-# -----------------------------
-
 def extract_pdfminer_blocks(pdf_path: str):
     text_blocks   = []
     reading_order = []
@@ -589,10 +578,6 @@ def extract_pdfminer_blocks(pdf_path: str):
     return text_blocks, reading_order
 
 
-# -----------------------------
-# Phase 2.5: Align blocks -> spans
-# -----------------------------
-
 def align_blocks_to_spans(
     text_blocks: List[Dict[str, Any]],
     text_spans:  List[Dict[str, Any]],
@@ -639,10 +624,6 @@ def align_blocks_to_spans(
 
     return text_blocks
 
-
-# -----------------------------
-# Structure extraction (pikepdf)
-# -----------------------------
 
 def _pike_to_py(obj):
     try:
@@ -845,7 +826,6 @@ def extract_structure_pikepdf(pdf_path: str):
         with pikepdf.open(pdf_path) as pdf:
             root = pdf.Root
 
-            # /Lang — with parentheses stripping for pikepdf artifact
             try:
                 if "/Lang" in root:
                     lang_val = str(root["/Lang"]).strip()
@@ -992,10 +972,6 @@ def extract_structure_pikepdf(pdf_path: str):
         return result
 
 
-# -----------------------------
-# OCR
-# -----------------------------
-
 def ocr_image_bytes(img_bytes: bytes, lang: str = "eng"):
     """Returns (text, confidence)."""
     try:
@@ -1047,10 +1023,6 @@ def run_ocr_on_image_occurrences(image_occurrences, asset_bytes_global, min_px: 
         occ["ocr_confidence"] = conf
 
 
-# -----------------------------
-# Interactivity extraction (pikepdf)
-# -----------------------------
-
 def extract_interactivity_pikepdf(pdf_path: str) -> Dict[str, Any]:
     """
     Extract interactivity signals needed for WCAG 2.1.x / 3.3.x / 4.1.2 checks.
@@ -1068,7 +1040,6 @@ def extract_interactivity_pikepdf(pdf_path: str) -> Dict[str, Any]:
         with pikepdf.open(pdf_path) as pdf:
             root = pdf.Root
 
-            # ── JavaScript detection ─────────────────────────────────────────
             try:
                 if "/OpenAction" in root:
                     action = root["/OpenAction"]
@@ -1128,7 +1099,6 @@ def extract_interactivity_pikepdf(pdf_path: str) -> Dict[str, Any]:
             except Exception:
                 pass
 
-            # ── Tab order ────────────────────────────────────────────────────
             try:
                 for page_index, page in enumerate(pdf.pages):
                     tabs_val = None
@@ -1142,7 +1112,6 @@ def extract_interactivity_pikepdf(pdf_path: str) -> Dict[str, Any]:
             except Exception:
                 pass
 
-            # ── Submit actions ───────────────────────────────────────────────
             result["submit_actions"] = []
             try:
                 if "/AcroForm" in root:
@@ -1199,7 +1168,6 @@ def extract_interactivity_pikepdf(pdf_path: str) -> Dict[str, Any]:
 
             result["has_submit_action"] = len(result["submit_actions"]) > 0
 
-            # ── AcroForm fields ──────────────────────────────────────────────
             try:
                 if "/AcroForm" not in root:
                     return result
@@ -1327,18 +1295,11 @@ def extract_interactivity_pikepdf(pdf_path: str) -> Dict[str, Any]:
     return result
 
 
-# -----------------------------
-# Main extraction
-# -----------------------------
-
 def extract_document_json(pdf_path: str, run_ocr: bool = True) -> Dict[str, Any]:
-    # ── Phase 2: pdfminer blocks + reading order ──────────────────────────────
     text_blocks, reading_order = extract_pdfminer_blocks(pdf_path)
 
-    # ── Phase 1: PyMuPDF visual extraction ───────────────────────────────────
     doc = fitz.open(pdf_path)
 
-    # Metadata (restored: title, author, subject, keywords)
     pdf_meta = doc.metadata or {}
     title    = pdf_meta.get("title")
     author   = pdf_meta.get("author")
@@ -1353,7 +1314,7 @@ def extract_document_json(pdf_path: str, run_ocr: bool = True) -> Dict[str, Any]
     all_graphics:          List[Dict[str, Any]] = []
     all_asset_bytes:       Dict[str, bytes]     = {}
     all_widgets:           List[Dict[str, Any]] = []
-    all_form_fields:       List[Dict[str, Any]] = []  # restored for batch2
+    all_form_fields:       List[Dict[str, Any]] = []  
 
     for page_index in range(doc.page_count):
         page = doc.load_page(page_index)
@@ -1366,9 +1327,8 @@ def extract_document_json(pdf_path: str, run_ocr: bool = True) -> Dict[str, Any]
         })
 
         all_widgets.extend(extract_widgets(page, page_index))
-        all_form_fields.extend(extract_form_fields(page, page_index))  # restored
+        all_form_fields.extend(extract_form_fields(page, page_index))  
 
-        # Text spans
         text_dict    = page.get_text("dict")
         span_counter = 0
 
@@ -1382,7 +1342,7 @@ def extract_document_json(pdf_path: str, run_ocr: bool = True) -> Dict[str, Any]
                     if not bbox or not txt.strip():
                         continue
 
-                    detected_lang = detect_language_safe(txt)  # restored for batch2
+                    detected_lang = detect_language_safe(txt)  
 
                     span_id = f"span_p{page_index}_s{span_counter}"
                     span_counter += 1
@@ -1393,7 +1353,7 @@ def extract_document_json(pdf_path: str, run_ocr: bool = True) -> Dict[str, Any]
                         "bbox":              [float(bbox[0]), float(bbox[1]),
                                               float(bbox[2]), float(bbox[3])],
                         "text":              txt,
-                        "detected_language": detected_lang,        # restored for batch2
+                        "detected_language": detected_lang,        
                         "font": {
                             "name":  span.get("font", ""),
                             "size":  float(span.get("size", 0.0)),
@@ -1402,12 +1362,12 @@ def extract_document_json(pdf_path: str, run_ocr: bool = True) -> Dict[str, Any]
                         "color": {
                             "fill_rgb": int_color_to_rgb(span.get("color"))
                         },
-                        "layout": {                                # incoming v2
+                        "layout": {                                
                             "block_index": block_idx,
                             "line_index":  line_idx
                         },
-                        "presentation_semantics": default_presentation_semantics(),  # v2
-                        "resize_risk":            default_resize_risk(),              # v2
+                        "presentation_semantics": default_presentation_semantics(),  
+                        "resize_risk":            default_resize_risk(),              
                     })
 
         assets, occurrences, asset_bytes_map = extract_images(page, doc, page_index)
@@ -1420,7 +1380,6 @@ def extract_document_json(pdf_path: str, run_ocr: bool = True) -> Dict[str, Any]
         all_links.extend(extract_links(page, page_index))
         all_graphics.extend(extract_graphics(page, page_index))
 
-    # ── Phase 5: contrast + media (needs open doc) ───────────────────────────
     compute_contrast_for_spans(doc, text_spans, scale=2.0)
     annotate_graphics_non_text_contrast(doc, all_graphics, scale=2.0)
     annotate_widgets_non_text_contrast(doc, all_widgets, scale=2.0)
@@ -1431,30 +1390,24 @@ def extract_document_json(pdf_path: str, run_ocr: bool = True) -> Dict[str, Any]
     media_occurrences.extend(extract_embedded_files_pikepdf(pdf_path))
     annotate_media_alternatives(media_occurrences, text_spans)
 
-    # Bookmarks extracted before doc.close()
-    bookmarks = extract_bookmarks(doc)  # restored for batch2
+    bookmarks = extract_bookmarks(doc)  
 
     doc.close()
 
-    # ── Phase 4: OCR ──────────────────────────────────────────────────────────
     if run_ocr:
         run_ocr_on_image_occurrences(all_image_occurrences, all_asset_bytes)
 
-    # ── Annotations ───────────────────────────────────────────────────────────
     annotate_text_in_image_context(text_spans, all_image_occurrences)
     annotate_logo_like_text(text_spans, pages)
     annotate_decorative_text(text_spans)
     annotate_ui_labels(text_spans, all_widgets)
     annotate_resize_risk(text_spans, all_graphics, all_widgets, pages)
 
-    # ── Phase 2.5: align blocks → spans ──────────────────────────────────────
     text_blocks = align_blocks_to_spans(text_blocks, text_spans, pages)
 
-    # ── Derived fields (restored for batch2) ─────────────────────────────────
     inferred_language  = infer_document_language(text_spans)
     heading_candidates = detect_heading_candidates(text_spans)
 
-    # ── Structure + figure mapping ────────────────────────────────────────────
     file_hash = sha256_file(pdf_path)
     structure = extract_structure_pikepdf(pdf_path)
 
@@ -1464,18 +1417,16 @@ def extract_document_json(pdf_path: str, run_ocr: bool = True) -> Dict[str, Any]
     map_figures_to_images_by_page_and_mcid(structure, all_image_occurrences)
     map_figures_to_images_by_order(structure, all_image_occurrences)
 
-    # ── Interactivity (required by batch3) ───────────────────────────────────
     interactivity = extract_interactivity_pikepdf(pdf_path)
 
-    # ── Assemble output ───────────────────────────────────────────────────────
     out = {
         "document": {
             "metadata": {
                 "filename":          Path(pdf_path).name,
-                "title":             title,     # restored for batch2
-                "author":            author,    # restored for out3.json
-                "subject":           subject,   # restored for out3.json
-                "keywords":          keywords,  # restored for out3.json
+                "title":             title,     
+                "author":            author,    
+                "subject":           subject,   
+                "keywords":          keywords,  
                 "file_hash_sha256":  file_hash,
                 "page_count":        len(pages),
                 "coordinate_system": {
@@ -1495,16 +1446,16 @@ def extract_document_json(pdf_path: str, run_ocr: bool = True) -> Dict[str, Any]
             },
             "graphics":           all_graphics,
             "links":              all_links,
-            "bookmarks":          bookmarks,        # restored for batch2
-            "form_fields":        all_form_fields,  # restored for batch2
+            "bookmarks":          bookmarks,        
+            "form_fields":        all_form_fields,  
             "widgets":            all_widgets,
             "media": {
                 "occurrences": media_occurrences
             },
             "structure":          structure,
-            "interactivity":      interactivity,    # required by batch3
-            "inferred_language":  inferred_language,    # restored for batch2
-            "heading_candidates": heading_candidates,   # restored for batch2
+            "interactivity":      interactivity,    
+            "inferred_language":  inferred_language,    
+            "heading_candidates": heading_candidates,   
             "reading_order": {
                 "source": "pdfminer",
                 "order":  reading_order,

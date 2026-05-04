@@ -6,7 +6,7 @@ def _find_by_id(items: list[dict], id_value: str):
 def _norm(value):
     return (value or "").strip().lower()
 
-#some loactions don't include the id
+#some locations don't include the id
 
 def resolve_annotation_target(issue: dict, doc_json: dict):
     doc = doc_json.get("document", doc_json)
@@ -51,7 +51,7 @@ def resolve_annotation_target(issue: dict, doc_json: dict):
 def rgb_to_pdf(rgb):
     return tuple(v / 255 for v in rgb)
 
-SEVERITY_COLORS = {  # this matched the report builder color used 
+SEVERITY_COLORS = {  
     "high": rgb_to_pdf((185, 28, 28)),
     "medium": rgb_to_pdf((194, 65, 12)),
     "low": rgb_to_pdf((161, 98, 7)),

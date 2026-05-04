@@ -1,24 +1,3 @@
-"""
-AccessEd – Test PDF Generator
-==============================
-Generates a PDF with known accessibility violations to test batch3 rules.
-
-Violations built in:
-  - Untagged PDF (no /StructTreeRoot)                    → 2.1.1-A high, 4.1.2-A high
-  - AcroForm fields with no /Tabs on any page            → 2.1.1-B medium
-  - Text field with no /TU and no /T                     → 3.3.2 high, 4.1.2-E high
-  - Text field with auto-generated /T only (numeric)     → 3.3.2 medium
-  - Text field with readable /T only (no /TU)            → 3.3.2 low
-  - Checkbox with no /AS appearance state                → 4.1.2-F high
-  - Validation action on one field                       → 3.3.1 needs_review
-  - Submit action                                        → 3.3.4 needs_review
-
-Run:
-    python generate_test_pdf.py
-Output:
-    test_violations.pdf
-"""
-
 import pikepdf
 from pikepdf import Dictionary, Array, Name, String
 
@@ -26,7 +5,6 @@ from pikepdf import Dictionary, Array, Name, String
 def build_test_pdf(out_path: str = "test_violations.pdf"):
     pdf = pikepdf.Pdf.new()
 
-    # ── Page ─────────────────────────────────────────────────────────────────
     page = pikepdf.Page(
         Dictionary(
             Type=Name("/Page"),
@@ -47,7 +25,6 @@ def build_test_pdf(out_path: str = "test_violations.pdf"):
     )
     pdf.pages.append(page)
 
-    # ── AcroForm fields ───────────────────────────────────────────────────────
     fields = []
 
     # Field 1: no /T and no /TU → 3.3.2 high, 4.1.2-E high

@@ -322,7 +322,7 @@ def check_2_2_2_pause_stop_hide(doc_json):
 
     This criterion covers two distinct sub-cases, each with its own conditions:
 
-    Sub-case A – Moving, blinking, or scrolling content:
+    Sub-case A - Moving, blinking, or scrolling content:
       A violation exists only if ALL of the following are true:
         (1) the content starts automatically
         (2) it lasts more than 5 seconds
@@ -330,7 +330,7 @@ def check_2_2_2_pause_stop_hide(doc_json):
         (4) no mechanism exists to pause, stop, or hide it
       Exception: if the movement is essential to the activity, no violation.
 
-    Sub-case B – Auto-updating content:
+    Sub-case B - Auto-updating content:
       A violation exists only if ALL of the following are true:
         (1) the content starts automatically
         (2) it is presented in parallel with other content
@@ -1175,7 +1175,7 @@ def check_4_1_2_name_role_value(doc_json):
     tree          = structure.get("tree") or []
     flat_nodes    = _collect_nodes(tree)
 
-    # ── A: untagged PDF ───────────────────────────────────────────────────────
+    # A: untagged PDF
     if not has_tags:
         issues.append(
             make_issue(
@@ -1196,7 +1196,7 @@ def check_4_1_2_name_role_value(doc_json):
             )
         )
 
-    # ── B: links without accessible names ────────────────────────────────────
+    # B: links without accessible names 
     links      = document.get("links", [])
     text_spans = document.get("text_spans", [])
 
@@ -1248,7 +1248,7 @@ def check_4_1_2_name_role_value(doc_json):
                 )
             )
 
-    # ── C: Figure nodes without accessible names ──────────────────────────────
+    # C: Figure nodes without accessible names 
     # /Alt = None  → key absent entirely → violation
     # /Alt = ""    → intentionally decorative → pass (screen reader skips it)
     # /Alt = "..." → descriptive alt text → pass
@@ -1280,7 +1280,7 @@ def check_4_1_2_name_role_value(doc_json):
                 )
             )
 
-    # ── D: Widget count vs field count — document-level, outside field loop ───
+    # D: Widget count vs field count — document-level, outside field loop 
     acroform_fields      = interactivity.get("acroform_fields", [])
     interactive_fields   = [f for f in acroform_fields if not f.get("read_only")]
     widget_nodes_in_tree = [n for n in flat_nodes if n.get("role") == "Widget"]
@@ -1306,7 +1306,7 @@ def check_4_1_2_name_role_value(doc_json):
             )
         )
 
-    # ── E: per-field — fields with no accessible name ─────────────────────────
+    # E: per-field — fields with no accessible name 
     for field in interactive_fields:
         if not field.get("tooltip") and not field.get("name"):
             field_id = field.get("id", "unknown")
@@ -1336,7 +1336,7 @@ def check_4_1_2_name_role_value(doc_json):
                 )
             )
 
-    # ── F: checkboxes/radio buttons with no appearance state ──────────────────
+    # F: checkboxes/radio buttons with no appearance state
     for field in interactive_fields:
         if field.get("type") != "Btn":
             continue
@@ -1376,7 +1376,7 @@ def check_4_1_2_name_role_value(doc_json):
                 )
             )
 
-    # ── Requirement 3: notification of changes ────────────────────────────────
+    # Requirement 3: notification of changes 
     if interactive_fields:
         issues.append(
             make_issue(
@@ -1418,7 +1418,7 @@ def run_batch3_rules(doc_json: Dict[str, Any]) -> List[Dict[str, Any]]:
     """
     issues: List[Dict[str, Any]] = []
 
-    issues.extend(check_not_applicable())              # 4.1.1
+    issues.extend(check_not_applicable())              
     issues.extend(check_2_1_1_keyboard(doc_json))
     issues.extend(check_2_1_2_no_keyboard_trap(doc_json))
     issues.extend(check_2_1_4_character_shortcuts(doc_json))

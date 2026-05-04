@@ -11,7 +11,6 @@ from app.services.annotator import annotate_pdf
 import time
 
 
-# Ensure backend/ is on the path so app.services.wcag resolves correctly
 _BACKEND_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
@@ -76,7 +75,6 @@ async def upload_pdf(background_tasks: BackgroundTasks, file: UploadFile = File(
     finally:
         await file.close()
 
-    # Quick signature check: PDF files start with %PDF-
     with open(out_path, "rb") as f:
         if f.read(5) != b"%PDF-":
             try:
@@ -85,7 +83,6 @@ async def upload_pdf(background_tasks: BackgroundTasks, file: UploadFile = File(
                 pass
             raise HTTPException(status_code=400, detail="Invalid PDF file.")
 
-    # ── Step 1: Parse PDF ─────────────────────────────────────────────
     try:
         from app.services.parsing import extract_document_json
         doc_json = extract_document_json(out_path)
@@ -93,14 +90,12 @@ async def upload_pdf(background_tasks: BackgroundTasks, file: UploadFile = File(
         _cleanup(out_path)
         raise HTTPException(status_code=500, detail=f"Parsing failed: {e}")
 
-    # ── Step 4: Run WCAG detector ─────────────────────────────────────
     try:
         from app.services.wcag.detector import run_wcag_detector
         issues = run_wcag_detector(doc_json)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"WCAG detection failed: {e}")
 
-    # ── Step 5: Build report ──────────────────────────────────────────
     try:
         from app.services.wcag.report_builder import build_report
         document_meta = doc_json.get("document", {}).get("metadata", {})
@@ -108,7 +103,6 @@ async def upload_pdf(background_tasks: BackgroundTasks, file: UploadFile = File(
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Report building failed: {e}")
 
-    # ── Step 5b: Save report JSON ─────────────────────────────────────
     report_json_path = os.path.join(UPLOAD_DIR, f"{upload_id}_report.json")
     try:
         with open(report_json_path, "w", encoding="utf-8") as f:
@@ -116,7 +110,6 @@ async def upload_pdf(background_tasks: BackgroundTasks, file: UploadFile = File(
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to save report: {e}")
 
-    # ── Step 6: Generate PDF report ───────────────────────────────────
     pdf_out_path = os.path.join(UPLOAD_DIR, f"{upload_id}_report.pdf")
     try:
         from app.services.wcag.report_builder import build_pdf_report
@@ -125,7 +118,6 @@ async def upload_pdf(background_tasks: BackgroundTasks, file: UploadFile = File(
         _cleanup( report_json_path)
         raise HTTPException(status_code=500, detail=f"PDF generation failed: {e}")
 
-    # ── Step 7: Apply corrections ─────────────────────────────────────
     corrected_path = os.path.join(UPLOAD_DIR, f"{upload_id}_corrected.pdf")
     try:
         correction_result = apply_corrections(
@@ -138,7 +130,6 @@ async def upload_pdf(background_tasks: BackgroundTasks, file: UploadFile = File(
     except Exception as e:
         correction_result = {"status": "failed", "error": str(e)}
         corrected_path = None
-        # annotate the original pdf 
     annotated_path = os.path.join(UPLOAD_DIR, f"{upload_id}_annotated.pdf")
     annotate_pdf(
             original_pdf_path=out_path,
@@ -146,15 +137,13 @@ async def upload_pdf(background_tasks: BackgroundTasks, file: UploadFile = File(
             doc_json=doc_json,
             output_path=annotated_path,
         )
-        
-        # delete pdf  ────────────
+
     _cleanup(out_path)
 
-    # ── Cleanup items ────────
     if background_tasks is not None:
                 background_tasks.add_task(
                             delayed_cleanup,
-                                180,#(so 3 min)
+                                180,
                                 report_json_path,
                                 pdf_out_path,
                                 corrected_path,

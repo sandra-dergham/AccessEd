@@ -12,7 +12,6 @@ import subprocess
 from pathlib import Path
 
 
-##### geometry helpers ########
 
 def bbox_width(bbox: List[float]) -> float:
     return max(0.0, bbox[2] - bbox[0])
@@ -94,7 +93,6 @@ def bbox_intersects(b1: List[float], b2: List[float], margin: float = 0.0) -> bo
     return bbox_intersection(bb1, b2) is not None
 
 
-
 def pdfminer_bbox_to_pymupdf_bbox(bbox_pdfminer: List[float], page_height: float) -> List[float]:
     """
     pdfminer bbox: [x0, y0, x1, y1] with origin bottom-left.
@@ -105,8 +103,6 @@ def pdfminer_bbox_to_pymupdf_bbox(bbox_pdfminer: List[float], page_height: float
     new_y1 = page_height - y0
     return [float(x0), float(new_y0), float(x1), float(new_y1)]
 
-
-##### color and contrast helpers ########
 
 def srgb_channel_to_linear(c: float) -> float:
     c = c / 255.0
@@ -149,8 +145,6 @@ def colors_are_distinct(c1: list[int], c2: list[int], threshold: float = 80.0) -
     )
     return dist >= threshold
 
-
-##### text and layout helpers ########
 
 def similar_font_properties(
     font1: Dict[str, Any],
@@ -247,8 +241,6 @@ def _normalize_repeat_text(text: str) -> str:
     return " ".join((text or "").strip().lower().split())
 
 
-##### widget helpers ########
-
 def extract_widgets(page: fitz.Page, page_index: int) -> List[Dict[str, Any]]:
     widgets = []
     w_counter = 0
@@ -297,8 +289,6 @@ def extract_widgets(page: fitz.Page, page_index: int) -> List[Dict[str, Any]]:
 
     return widgets
 
-
-##### visual cue helpers ########
 
 def has_underline_graphic(
     span_bbox: List[float],
@@ -407,12 +397,9 @@ def collect_same_line_non_link_neighbors(
     return out
 
 
-##### media constants ########
-
 AUDIO_EXTS = {".mp3", ".wav", ".m4a", ".aac", ".ogg", ".flac"}
 VIDEO_EXTS = {".mp4", ".mov", ".avi", ".wmv", ".mkv", ".webm", ".mpeg", ".mpg"}
 
-##### media regex expressions ########
 
 TRANSCRIPT_POSITIVE_RE = re.compile(
     r"\b(?:"
@@ -535,8 +522,6 @@ ALT_TEXT_KEYWORDS = [
 ]
 
 
-##### media classification helpers ########
-
 def classify_by_filename(filename: Optional[str]) -> str:
     name = (filename or "").lower()
     for ext in AUDIO_EXTS:
@@ -572,8 +557,6 @@ def safe_pdf_name(value) -> Optional[str]:
     except Exception:
         return None
 
-
-##### media probing helpers ########
 
 def run_ffprobe(media_path: str) -> Dict[str, Any]:
     try:
@@ -621,8 +604,6 @@ def run_ffprobe(media_path: str) -> Dict[str, Any]:
     except Exception as e:
         return {"ok": False, "reason": f"{type(e).__name__}: {e}"}
 
-
-##### media extraction from pymupdf annotations ########
 
 def extract_media_occurrences(doc: fitz.Document, text_spans: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     media_occurrences: List[Dict[str, Any]] = []
@@ -783,8 +764,6 @@ def extract_media_occurrences(doc: fitz.Document, text_spans: List[Dict[str, Any
     return media_occurrences
 
 
-##### media extraction from pikepdf page annotations ########
-
 def extract_media_annotations_pikepdf(pdf_path: str, pages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """
     Detect likely prerecorded media in PDFs using annotation dictionaries.
@@ -892,8 +871,6 @@ def extract_media_annotations_pikepdf(pdf_path: str, pages: List[Dict[str, Any]]
     return media_occurrences
 
 
-##### media extraction from document embedded files ########
-
 def extract_embedded_files_pikepdf(pdf_path: str) -> List[Dict[str, Any]]:
     """
     Extract document-level embedded files from /Names -> /EmbeddedFiles.
@@ -998,7 +975,6 @@ def extract_embedded_files_pikepdf(pdf_path: str) -> List[Dict[str, Any]]:
     return media_occurrences
 
 
-##### media alternative annotation ########
 def annotate_media_alternatives(
     media_occurrences: List[Dict[str, Any]],
     text_spans: List[Dict[str, Any]],
@@ -1024,7 +1000,6 @@ def annotate_media_alternatives(
         found_alt = False
         candidate_spans: List[Dict[str, Any]] = []
 
-        ##### case 1: page-located media ########
         if page_index is not None and mb:
             for sp in spans_by_page.get(page_index, []):
                 sb = sp.get("bbox")
@@ -1040,7 +1015,6 @@ def annotate_media_alternatives(
                     if sp.get("id"):
                         nearby_ids.append(sp["id"])
 
-        ##### case 2: document-level embedded media ########
         else:
             for sp in text_spans:
                 st = (sp.get("text") or "").strip().lower()
@@ -1050,7 +1024,6 @@ def annotate_media_alternatives(
                 if sp.get("id"):
                     nearby_ids.append(sp["id"])
 
-        ##### scan candidate text spans ########
         for sp in candidate_spans:
             st = (sp.get("text") or "").strip().lower()
 
@@ -1076,7 +1049,6 @@ def annotate_media_alternatives(
         media["has_detectable_media_alternative"] = (
     media.get("has_detectable_media_alternative", False) or found_alt
 )
-##### default templates ########
 
 def default_presentation_semantics() -> Dict[str, Any]:
     return {
@@ -1130,8 +1102,6 @@ def default_non_text_contrast() -> Dict[str, Any]:
         "passes_3_1": None
     }
 
-
-##### semantic annotation helpers ########
 
 def annotate_ui_labels(
     text_spans: List[Dict[str, Any]],
@@ -1296,9 +1266,6 @@ def annotate_decorative_text(text_spans: List[Dict[str, Any]]):
 
 
 
-
-##### wcag 1.4.1 constants and helpers ########
-
 EXPLICIT_COLOR_ONLY_PATTERNS = [
     re.compile(
         r"\b(required|mandatory)\s+fields?\s+(are|is)\s+(marked|shown|indicated|highlighted|displayed)\s+(in|with|by|using)\s+(red|green|blue|yellow|orange|purple|pink|grey|gray)\b",
@@ -1435,8 +1402,6 @@ def _same_pattern_axis(
     same_row = abs(c1y - c2y) <= y_tol
     return same_col or same_row
 
-
-##### wcag 1.4.1 detection helpers ########
 
 def detect_link_color_only(document: dict) -> list[dict]:
     issues: list[dict] = []
@@ -2083,14 +2048,12 @@ def detect_repeated_identical_marker_or_label_color_only(document: dict) -> list
     return issues
 
 
-#######             wcag 2.5 helpers             #######
-
 def normalize_label(text: Optional[str]) -> str:
     if not text:
         return ""
     text = text.strip().lower()
-    text = re.sub(r"[_\-]+", " ", text)      # email_field -> email field
-    text = re.sub(r"[^\w\s]", "", text)      # remove punctuation
+    text = re.sub(r"[_\-]+", " ", text)      
+    text = re.sub(r"[^\w\s]", "", text)      
     text = re.sub(r"\s+", " ", text)
     return text.strip()
 
@@ -2105,14 +2068,12 @@ def matching_widget_for_acrofield(
     if not field_name:
         return None
 
-    # strongest case: same page + same field name
     if field_page is not None:
         for w in widgets:
             widget_name = (w.get("field_name") or "").strip().lower()
             if w.get("page_index") == field_page and widget_name == field_name:
                 return w
 
-    # fallback: same field name only
     matches = []
     for w in widgets:
         widget_name = (w.get("field_name") or "").strip().lower()
@@ -2194,8 +2155,6 @@ def combine_nearby_spans(
     return " ".join(txt for _, txt in same_line_parts).strip()
 
 
-
-############## 1.4 wcag ################
 def render_page_to_array(page: fitz.Page, scale: float = 2.0):
     mat = fitz.Matrix(scale, scale)
     pix = page.get_pixmap(matrix=mat, alpha=False)
@@ -2244,25 +2203,21 @@ def sample_outside_ring_rgb(
 
     samples = []
 
-    # top strip
     if oy0 < py0:
         top = img[oy0:py0, ox0:ox1]
         if top.size:
             samples.append(top.reshape(-1, img.shape[2]))
 
-    # bottom strip
     if py1 < oy1:
         bottom = img[py1:oy1, ox0:ox1]
         if bottom.size:
             samples.append(bottom.reshape(-1, img.shape[2]))
 
-    # left strip
     if ox0 < px0:
         left = img[py0:py1, ox0:px0]
         if left.size:
             samples.append(left.reshape(-1, img.shape[2]))
 
-    # right strip
     if px1 < ox1:
         right = img[py0:py1, px1:ox1]
         if right.size:
@@ -2311,8 +2266,6 @@ def annotate_graphics_non_text_contrast(
             if fill_rgb and len(fill_rgb) >= 3:
                 contrast_against_fill = float(round(contrast_ratio(fill_rgb, adjacent), 3))
 
-            # Prefer stroke when present; otherwise fill.
-            # This is usually more realistic than always taking the minimum.
             effective_contrast = contrast_against_stroke
             if effective_contrast is None:
                 effective_contrast = contrast_against_fill
@@ -2343,22 +2296,18 @@ def sample_widget_border_rgb(
 
     samples = []
 
-    # top edge
     top = img[py0:min(py0 + edge_px, py1), px0:px1]
     if top.size:
         samples.append(top.reshape(-1, img.shape[2]))
 
-    # bottom edge
     bottom = img[max(py0, py1 - edge_px):py1, px0:px1]
     if bottom.size:
         samples.append(bottom.reshape(-1, img.shape[2]))
 
-    # left edge
     left = img[py0:py1, px0:min(px0 + edge_px, px1)]
     if left.size:
         samples.append(left.reshape(-1, img.shape[2]))
 
-    # right edge
     right = img[py0:py1, max(px0, px1 - edge_px):px1]
     if right.size:
         samples.append(right.reshape(-1, img.shape[2]))
@@ -2462,7 +2411,6 @@ def is_likely_layout_or_decorative_graphic(
 
     return False
 
-#########        wcag   1.4.4 helpers        ##########
 def estimate_resized_text_bbox_200(span_bbox: List[float]) -> List[float]:
     x0, y0, x1, y1 = span_bbox
     w = max(0.0, x1 - x0)
@@ -2741,8 +2689,6 @@ def annotate_resize_risk(
         }
 
 
-#############   wcag 1.1.1 helpers ################
-
 def _is_descriptive_control_name(name: str | None) -> bool:
     if not isinstance(name, str):
         return False
@@ -2751,7 +2697,6 @@ def _is_descriptive_control_name(name: str | None) -> bool:
     if not n:
         return False
 
-    # obvious generic/internal patterns
     generic_patterns = [
         r"^fld\d*$",
         r"^field\d*$",
@@ -2771,7 +2716,6 @@ def _is_descriptive_control_name(name: str | None) -> bool:
         if re.match(pattern, n):
             return False
 
-    # too short to be meaningful
     if len(n) < 3:
         return False
 
@@ -2792,7 +2736,6 @@ def _is_suspicious_alt_text(alt: Optional[str]) -> bool:
 
     alt_clean = alt.strip().lower()
 
-    # remove surrounding quotes repeatedly
     alt_unquoted = alt_clean.strip('"').strip("'").strip()
 
     if alt_unquoted in {"", '""', "''", "/n", "\\n", "n"}:
@@ -2813,7 +2756,6 @@ def _is_suspicious_alt_text(alt: Optional[str]) -> bool:
     return False
 
 
-#corrector helpers 
 def _blend_toward(rgb: list, target: list, amount: float) -> list:
         return [round(rgb[i] + (target[i] - rgb[i]) * amount) for i in range(3)]
 

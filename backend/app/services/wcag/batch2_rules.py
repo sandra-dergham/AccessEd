@@ -5,9 +5,6 @@ from .issue import make_issue
 def run_batch2_rules(document_model: dict) -> list[dict]:
     issues: list[dict] = []
 
-    # -------------------------------------------------
-    # Strong / directly implementable PDF checks
-    # -------------------------------------------------
     issues += check_info_relationships(document_model)   # 1.3.1
     issues += check_meaningful_sequence(document_model)  # 1.3.2
     issues += check_images_of_text(document_model)       # 1.4.5
@@ -17,9 +14,6 @@ def run_batch2_rules(document_model: dict) -> list[dict]:
     issues += check_language_of_page(document_model)     # 3.1.1
     issues += check_language_of_parts(document_model)    # 3.1.2
 
-    # -------------------------------------------------
-    # Heuristic / partial PDF checks
-    # -------------------------------------------------
     issues += check_sensory_characteristics(document_model)  # 1.3.3
     issues += check_identify_input_purpose(document_model)   # 1.3.5
     issues += check_reflow(document_model)                   # 1.4.10
@@ -28,11 +22,6 @@ def run_batch2_rules(document_model: dict) -> list[dict]:
     issues += check_multiple_ways(document_model)            # 2.4.5
 
     return issues
-
-
-# =====================================================
-# Strong / directly implementable PDF checks
-# =====================================================
 
 def check_info_relationships(document_model: dict) -> list[dict]:
     """
@@ -52,13 +41,10 @@ def check_info_relationships(document_model: dict) -> list[dict]:
 
     issues: list[dict] = []
 
-    # 1) Explicit parser signal: missing StructTreeRoot
     missing_struct_tree = any("StructTreeRoot" in str(e) for e in errors)
 
-    # 2) Tree exists but is empty / unusable
     empty_tree = has_tags and isinstance(structure_tree, list) and len(structure_tree) == 0
 
-    # 3) Try to detect whether the tree contains meaningful structural roles
     meaningful_roles = {
         "Document", "Part", "Sect", "Div",
         "H1", "H2", "H3", "H4", "H5", "H6",
@@ -572,24 +558,16 @@ def check_language_of_parts(document_model: dict) -> list[dict]:
         if "http://" in lowered_text or "https://" in lowered_text or "www." in lowered_text or "@" in lowered_text:
             continue
 
-        # Skip all-caps spans — language detectors frequently misidentify headings
         alpha_chars = [c for c in text if c.isalpha()]
         if alpha_chars and sum(1 for c in alpha_chars if c.isupper()) / len(alpha_chars) > 0.7:
             continue
 
-        # For multilingual support: allow Latin-extended (French accents etc.)
-        # but skip pure ASCII spans — langdetect misidentifies English headings as German/Dutch
-        # Arabic script starts at U+0600, Hebrew at U+0590, CJK at U+4E00
         has_non_latin = any(ord(c) > 0x024F for c in text if c.isalpha())
         is_pure_ascii = all(ord(c) < 128 for c in text if c.isalpha())
 
-        # Allow Arabic, Hebrew, CJK etc. (genuine non-Latin scripts)
-        # Allow French/Spanish/German with accented chars (Latin extended)
-        # Skip pure ASCII — too many false positives from langdetect
         if is_pure_ascii and not has_non_latin:
             continue
 
-        # Skip spans listing language names
         LANGUAGE_NAME_PATTERNS = {
             "arabic", "english", "french", "spanish", "german",
             "italian", "portuguese", "chinese", "japanese", "korean",
@@ -620,10 +598,6 @@ def check_language_of_parts(document_model: dict) -> list[dict]:
 
     return issues
 
-
-# =====================================================
-# Heuristic / partial PDF checks
-# =====================================================
 
 def check_sensory_characteristics(document_model: dict) -> list[dict]:
     """

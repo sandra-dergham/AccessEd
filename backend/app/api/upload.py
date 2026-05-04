@@ -13,7 +13,7 @@ async def upload_pdf(file: UploadFile = File(...)):
         # Validate structure
         validate_pdf_structure(path)
 
-        # Success: return temp path (later Person 3 will use it)
+        # Success: return temp path 
         return {"message": "Uploaded + validated", "temp_path": str(path)}
 
     except Exception:
