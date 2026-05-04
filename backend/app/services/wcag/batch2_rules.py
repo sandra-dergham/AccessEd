@@ -534,6 +534,7 @@ def check_language_of_parts(document_model: dict) -> list[dict]:
 
     document_lang = structure.get("lang")
     inferred_lang = doc.get("inferred_language")
+    issues: list[dict] = []
 
     # Prefer inferred language over embedded /Lang tag
     # Many PDFs have incorrect or missing /Lang — use content-based detection
