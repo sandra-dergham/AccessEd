@@ -5,6 +5,7 @@ export type UploadResponse = {
   status: string;
   report?: object;
 };
+const BASE_URL = import.meta.env.VITE_API_URL || "http://127.0.0.1:8000";
 
 type UploadProgress =
   | { type: "progress"; percent: number }
@@ -20,7 +21,7 @@ export function uploadPdf(
     formData.append("file", file);
 
     const xhr = new XMLHttpRequest();
-    xhr.open("POST", `${import.meta.env.VITE_API_URL}/api/upload`);
+    xhr.open("POST", `${BASE_URL}/api/upload`);
 
     const noProgressTimer = window.setTimeout(() => {
       onProgress({ type: "indeterminate" });
@@ -71,7 +72,7 @@ export async function downloadReport(
   originalFilename: string
 ): Promise<void> {
   const response = await fetch(
-    `${import.meta.env.VITE_API_URL}/api/uploads/${uploadId}/report`
+    `${BASE_URL}/api/uploads/${uploadId}/report`
   );
 
   if (!response.ok) {
@@ -101,7 +102,7 @@ export async function downloadCorrected(
   originalFilename: string
 ): Promise<void> {
   const response = await fetch(
-    `${import.meta.env.VITE_API_URL}/api/uploads/${uploadId}/corrected`
+    `${BASE_URL}/api/uploads/${uploadId}/corrected`
   );
 
   if (!response.ok) {
@@ -134,7 +135,7 @@ export async function downloadAnnotated(
   originalFilename: string
 ): Promise<void> {
   const response = await fetch(
-    `${import.meta.env.VITE_API_URL}/api/uploads/${uploadId}/annotated`
+    `${BASE_URL}/api/uploads/${uploadId}/annotated`
   );
 
   if (!response.ok) {

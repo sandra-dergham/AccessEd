@@ -143,6 +143,7 @@ async def upload_pdf(background_tasks: BackgroundTasks, file: UploadFile = File(
             doc_json=doc_json,
             output_path=corrected_path,
         )
+        print(json.dumps(correction_result, indent=2))
     except Exception as e:
         correction_result = {"status": "failed", "error": str(e)}
         corrected_path = None

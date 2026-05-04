@@ -1667,7 +1667,13 @@ def fix_4_1_2_figure_alt(
                 results.append(_skipped("4.1.2", issue_key,
                                         f"Figure node with MCIDs {mcids} not found in struct tree"))
                 continue
-
+            if "/Alt" in figure_node and str(figure_node["/Alt"]).strip():
+                results.append(_skipped(
+                    "4.1.2",
+                    issue_key,
+                    "Figure already has /Alt from another fixer, not overwriting"
+                    ))
+                continue
             figure_node["/Alt"] = pikepdf.String(alt_text)
             results.append(_fixed("4.1.2", issue_key,
                                   f"Set /Alt='{alt_text[:60]}' on Figure node"))
