@@ -467,6 +467,7 @@ def build_pdf_report(report: Dict[str, Any], output_path: str):
     add_score_block(pdf,score)
     add_scoring_methodology(pdf)
     
+    pdf.add_page()
     add_section_title(pdf, "Executive Summary")
     add_paragraph(
         pdf,
