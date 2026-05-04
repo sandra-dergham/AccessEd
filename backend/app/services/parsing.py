@@ -105,7 +105,7 @@ def detect_language_safe(text: str) -> Optional[str]:
     Returns ISO language code or None if detection fails.
     """
     try:
-        if not text or len(text.strip()) < 5:
+        if not text or len(text.strip()) < 10:
             return None
         return detect(text)
     except LangDetectException:

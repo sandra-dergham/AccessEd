@@ -533,12 +533,25 @@ def check_language_of_parts(document_model: dict) -> list[dict]:
     text_spans = doc.get("text_spans", [])
 
     document_lang = structure.get("lang")
-    issues: list[dict] = []
+    inferred_lang = doc.get("inferred_language")
 
-    if not document_lang or not str(document_lang).strip():
+    # Prefer inferred language over embedded /Lang tag
+    # Many PDFs have incorrect or missing /Lang — use content-based detection
+    if inferred_lang:
+        inferred_lang = str(inferred_lang).strip().lower().split("-")[0]
+        if document_lang:
+            document_lang = str(document_lang).strip().lower().split("-")[0]
+            # If embedded lang conflicts with inferred, trust inferred
+            if document_lang != inferred_lang:
+                document_lang = inferred_lang
+        else:
+            document_lang = inferred_lang
+    elif document_lang:
+        document_lang = str(document_lang).strip().lower().split("-")[0]
+    else:
         return issues
 
-    document_lang = str(document_lang).strip().lower().split("-")[0]
+    issues: list[dict] = []
     MIN_TEXT_LENGTH = 20
 
     for span in text_spans:
@@ -563,8 +576,16 @@ def check_language_of_parts(document_model: dict) -> list[dict]:
         if alpha_chars and sum(1 for c in alpha_chars if c.isupper()) / len(alpha_chars) > 0.7:
             continue
 
-        # Skip spans with only ASCII characters — real foreign text has non-ASCII chars
-        if all(ord(c) < 128 for c in text):
+        # For multilingual support: allow Latin-extended (French accents etc.)
+        # but skip pure ASCII spans — langdetect misidentifies English headings as German/Dutch
+        # Arabic script starts at U+0600, Hebrew at U+0590, CJK at U+4E00
+        has_non_latin = any(ord(c) > 0x024F for c in text if c.isalpha())
+        is_pure_ascii = all(ord(c) < 128 for c in text if c.isalpha())
+
+        # Allow Arabic, Hebrew, CJK etc. (genuine non-Latin scripts)
+        # Allow French/Spanish/German with accented chars (Latin extended)
+        # Skip pure ASCII — too many false positives from langdetect
+        if is_pure_ascii and not has_non_latin:
             continue
 
         # Skip spans listing language names
