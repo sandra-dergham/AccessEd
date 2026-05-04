@@ -10,7 +10,6 @@ from .wcag.helper_function_b1 import contrast_ratio,_find_accessible_color
 from app.services.openai_client import get_openai_client
 
 logger = logging.getLogger(__name__)
-openai_client = get_openai_client()
 
 def _fixed(criterion: str, issue_id: str, detail: str) -> dict:
     """Return this when the fix was applied successfully."""
@@ -1500,6 +1499,12 @@ def fix_4_1_2_figure_alt(
                                         f"Figure node with MCIDs {mcids} not found in struct tree"))
                 continue
 
+            if "/Alt" in figure_node and str(figure_node["/Alt"]).strip():
+                results.append(_skipped(
+                    "4.1.2", issue_key,
+                    "Figure already has /Alt from another fixer, not overwriting"
+                ))
+                continue
             figure_node["/Alt"] = pikepdf.String(alt_text)
             results.append(_fixed("4.1.2", issue_key,
                                   f"Set /Alt='{alt_text[:60]}' on Figure node"))
