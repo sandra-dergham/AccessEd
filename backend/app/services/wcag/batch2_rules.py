@@ -558,6 +558,25 @@ def check_language_of_parts(document_model: dict) -> list[dict]:
         if "http://" in lowered_text or "https://" in lowered_text or "www." in lowered_text or "@" in lowered_text:
             continue
 
+        # Skip all-caps spans — language detectors frequently misidentify headings
+        alpha_chars = [c for c in text if c.isalpha()]
+        if alpha_chars and sum(1 for c in alpha_chars if c.isupper()) / len(alpha_chars) > 0.7:
+            continue
+
+        # Skip spans with only ASCII characters — real foreign text has non-ASCII chars
+        if all(ord(c) < 128 for c in text):
+            continue
+
+        # Skip spans listing language names
+        LANGUAGE_NAME_PATTERNS = {
+            "arabic", "english", "french", "spanish", "german",
+            "italian", "portuguese", "chinese", "japanese", "korean",
+            "hindi", "turkish", "dutch", "russian", "persian"
+        }
+        words = set(lowered_text.split())
+        if words.intersection(LANGUAGE_NAME_PATTERNS):
+            continue
+
         span_lang = str(span_lang).strip().lower().split("-")[0]
 
         if span_lang != document_lang:
