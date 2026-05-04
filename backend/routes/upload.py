@@ -8,6 +8,7 @@ import io
 import logging
 from app.services.corrector import apply_corrections
 from app.services.annotator import annotate_pdf
+import time
 
 
 # Ensure backend/ is on the path so app.services.wcag resolves correctly
@@ -37,6 +38,10 @@ def _cleanup(*paths):
                 logger.info("Deleted temp file: %s", path)
         except Exception as e:
             logger.warning("Could not delete %s: %s", path, e)
+
+def delayed_cleanup(delay: int, *paths):
+    time.sleep(delay)
+    _cleanup(*paths)
 
 
 @router.post("/upload")
@@ -88,23 +93,11 @@ async def upload_pdf(background_tasks: BackgroundTasks, file: UploadFile = File(
         _cleanup(out_path)
         raise HTTPException(status_code=500, detail=f"Parsing failed: {e}")
 
-    # ── Step 2: Save parsed JSON ──────────────────────────────────────
-    json_out_path = os.path.join(UPLOAD_DIR, f"{upload_id}.json")
-    try:
-        with open(json_out_path, "w", encoding="utf-8") as f:
-            json.dump(doc_json, f, ensure_ascii=False, indent=2)
-    except Exception as e:
-        _cleanup(out_path)
-        raise HTTPException(status_code=500, detail=f"Failed to save JSON: {e}")
-
-    
-
     # ── Step 4: Run WCAG detector ─────────────────────────────────────
     try:
         from app.services.wcag.detector import run_wcag_detector
         issues = run_wcag_detector(doc_json)
     except Exception as e:
-        _cleanup(json_out_path)
         raise HTTPException(status_code=500, detail=f"WCAG detection failed: {e}")
 
     # ── Step 5: Build report ──────────────────────────────────────────
@@ -113,7 +106,6 @@ async def upload_pdf(background_tasks: BackgroundTasks, file: UploadFile = File(
         document_meta = doc_json.get("document", {}).get("metadata", {})
         report = build_report(document_meta, issues)
     except Exception as e:
-        _cleanup(json_out_path)
         raise HTTPException(status_code=500, detail=f"Report building failed: {e}")
 
     # ── Step 5b: Save report JSON ─────────────────────────────────────
@@ -122,7 +114,6 @@ async def upload_pdf(background_tasks: BackgroundTasks, file: UploadFile = File(
         with open(report_json_path, "w", encoding="utf-8") as f:
             json.dump(report, f)
     except Exception as e:
-        _cleanup(json_out_path)
         raise HTTPException(status_code=500, detail=f"Failed to save report: {e}")
 
     # ── Step 6: Generate PDF report ───────────────────────────────────
@@ -131,7 +122,7 @@ async def upload_pdf(background_tasks: BackgroundTasks, file: UploadFile = File(
         from app.services.wcag.report_builder import build_pdf_report
         build_pdf_report(report, pdf_out_path)
     except Exception as e:
-        _cleanup(json_out_path, report_json_path)
+        _cleanup( report_json_path)
         raise HTTPException(status_code=500, detail=f"PDF generation failed: {e}")
 
     # ── Step 7: Apply corrections ─────────────────────────────────────
@@ -159,9 +150,16 @@ async def upload_pdf(background_tasks: BackgroundTasks, file: UploadFile = File(
         # delete pdf  ────────────
     _cleanup(out_path)
 
-    # ── Cleanup: delete JSON files now, keep PDFs for download ────────
+    # ── Cleanup items ────────
     if background_tasks is not None:
-        background_tasks.add_task(_cleanup, json_out_path)
+                background_tasks.add_task(
+                            delayed_cleanup,
+                                180,#(so 3 min)
+                                report_json_path,
+                                pdf_out_path,
+                                corrected_path,
+                                annotated_path,
+                                )
 
     return {
         "upload_id":         upload_id,
