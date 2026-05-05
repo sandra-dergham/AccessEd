@@ -4,6 +4,7 @@ import logging
 import re
 import shutil
 from typing import Any
+import zlib
 
 import pikepdf
 from .wcag.helper_function_b1 import contrast_ratio,_find_accessible_color
@@ -513,7 +514,6 @@ def fix_1_1_1_control_name(
     fitz_doc.close()
     return results
 
-
 def fix_1_4_3_contrast(
     pdf: pikepdf.Pdf,
     issues: list[dict],
@@ -529,6 +529,8 @@ def fix_1_4_3_contrast(
 
     span_lookup = _build_span_lookup(doc_json)
 
+    recolor_cache: dict[tuple, bool] = {}
+
     for iss in targets:
         try:
             loc     = iss.get("location", {})
@@ -539,18 +541,19 @@ def fix_1_4_3_contrast(
                 results.append(_skipped("1.4.3", issue_key, f"Span '{span_id}' not found"))
                 continue
 
-            fg_rgb = span.get("color", {}).get("fill_rgb") or span.get("fill_rgb")
-            bg_rgb = span.get("background_estimate", {}).get("bg_rgb") or span.get("bg_rgb")
+            fg_rgb     = span.get("color", {}).get("fill_rgb") or span.get("fill_rgb")
+            bg_rgb     = span.get("background_estimate", {}).get("bg_rgb") or span.get("bg_rgb")
             large_text = span.get("contrast", {}).get("large_text_assumed", False)
 
             if not fg_rgb or not bg_rgb:
                 results.append(_skipped("1.4.3", issue_key, "Missing fg or bg RGB"))
                 continue
 
-            target_ratio  = 3.0 if large_text else 4.5
-            current_ratio = contrast_ratio(fg_rgb, bg_rgb)
+            required_ratio = 3.0 if large_text else 4.5
+            target_ratio   = 4.0 if large_text else 6.0
+            current_ratio  = contrast_ratio(fg_rgb, bg_rgb)
 
-            if current_ratio >= target_ratio:
+            if current_ratio >= required_ratio:
                 results.append(_fixed("1.4.3", issue_key, f"Already passes: {current_ratio:.2f}:1"))
                 continue
 
@@ -560,9 +563,14 @@ def fix_1_4_3_contrast(
                 continue
 
             page_index = span.get("page_index")
-            success    = _try_recolor_in_stream(pdf, page_index, fg_rgb, new_fg_rgb)
+            new_ratio  = contrast_ratio(new_fg_rgb, bg_rgb)
+            cache_key = (page_index, tuple(fg_rgb))
 
-            new_ratio = contrast_ratio(new_fg_rgb, bg_rgb)
+            if cache_key in recolor_cache:
+                success = recolor_cache[cache_key]
+            else:
+                success = _try_recolor_in_stream(pdf, page_index, fg_rgb, new_fg_rgb)
+                recolor_cache[cache_key] = success
 
             if success:
                 results.append(_fixed(
@@ -597,90 +605,142 @@ def _try_recolor_in_stream(
         if page_index is None:
             return False
 
-        page = pdf.pages[page_index]
+        page     = pdf.pages[page_index]
         contents = page.get("/Contents")
-
         if contents is None:
             return False
 
         def to_pdf_float(v: int) -> float:
             return round(v / 255.0, 4)
 
-        def close(a: float, b: float, tolerance: float = 0.01) -> bool:
-            return abs(a - b) <= tolerance
+        def close(a: float, b: float, tol: float = 0.02) -> bool:
+            return abs(a - b) <= tol
 
         old_vals = [to_pdf_float(v) for v in old_rgb]
         new_vals = [to_pdf_float(v) for v in new_rgb]
 
-        new_op = (
-            f"{new_vals[0]:.4f} {new_vals[1]:.4f} {new_vals[2]:.4f} rg"
-        ).encode()
+        def make_op(suffix: bytes) -> bytes:
+            return (
+                f"{new_vals[0]:.4f} {new_vals[1]:.4f} {new_vals[2]:.4f} ".encode()
+                + suffix
+            )
 
-        color_pattern = re.compile(
+        new_rg = make_op(b"rg")
+        new_RG = make_op(b"RG")
+
+        color_re = re.compile(
             rb"(?P<r>(?:\d*\.\d+|\d+))\s+"
             rb"(?P<g>(?:\d*\.\d+|\d+))\s+"
             rb"(?P<b>(?:\d*\.\d+|\d+))\s+"
-            rb"rg\b"
+            rb"(?P<op>rg|RG)\b"
         )
+        bt_re = re.compile(rb"\bBT\b")
+        et_re = re.compile(rb"\bET\b")
 
-        def read_stream(stream):
-            raw = stream.read_bytes()
+        def read_stream(s):
+            raw = s.read_bytes()
             try:
-                return zlib.decompress(raw), True
+                decoded = s.read_bytes(decode_level=pikepdf.StreamDecodeLevel.all)
+                return bytes(decoded), "pikepdf"
             except Exception:
-                return raw, False
+                pass
+            try:
+                return zlib.decompress(raw), "zlib"
+            except Exception:
+                pass
+            return raw, "raw"
 
-        def write_stream(stream, data: bytes, was_compressed: bool):
-            if was_compressed:
-                stream.write(zlib.compress(data), filter=pikepdf.Name("/FlateDecode"))
+        def write_stream(s, data: bytes, decode_mode: str):
+            if decode_mode in ("pikepdf", "zlib"):
+                s.write(zlib.compress(data), filter=pikepdf.Name("/FlateDecode"))
             else:
-                stream.write(data)
+                s.write(data)
+
+        def matches_target(m) -> bool:
+            try:
+                r = float(m.group("r"))
+                g = float(m.group("g"))
+                b = float(m.group("b"))
+            except ValueError:
+                return False
+            return close(r, old_vals[0]) and close(g, old_vals[1]) and close(b, old_vals[2])
 
         def replace_in_stream(stream) -> bool:
-            data, was_compressed = read_stream(stream)
+            data, decode_mode = read_stream(stream)
 
-            matches = []
+            bt_positions = [m.start() for m in bt_re.finditer(data)]
+            et_positions = [m.start() for m in et_re.finditer(data)]
 
-            for match in color_pattern.finditer(data):
-                try:
-                    r = float(match.group("r"))
-                    g = float(match.group("g"))
-                    b = float(match.group("b"))
-                except Exception:
-                    continue
+            candidates: set[int] = set()
 
-                if (
-                    close(r, old_vals[0])
-                    and close(g, old_vals[1])
-                    and close(b, old_vals[2])
-                ):
-                    matches.append(match)
+            if bt_positions:
+                # Build BT→ET ranges
+                bt_et_ranges: list[tuple[int, int]] = []
+                ei = 0
+                for bt in bt_positions:
+                    while ei < len(et_positions) and et_positions[ei] <= bt:
+                        ei += 1
+                    et_end = (
+                        et_positions[ei] + 2
+                        if ei < len(et_positions)
+                        else len(data)
+                    )
+                    bt_et_ranges.append((bt, et_end))
 
-            # robust: allow multiple matches
-            if not matches:
+                # Pass 1 — rg/RG inside BT…ET
+                for m in color_re.finditer(data):
+                    if not matches_target(m):
+                        continue
+                    for bt_start, et_end in bt_et_ranges:
+                        if bt_start <= m.start() < et_end:
+                            candidates.add(m.start())
+                            break
+
+                # Pass 2 — last rg/RG before each BT (inherited color state)
+                for bt_start, _ in bt_et_ranges:
+                    pre = [
+                        m for m in color_re.finditer(data)
+                        if m.end() <= bt_start
+                    ]
+                    for m in reversed(pre):
+                        if matches_target(m):
+                            candidates.add(m.start())
+                        break  
+
+            else:
+    
+                for m in color_re.finditer(data):
+                    if matches_target(m):
+                        candidates.add(m.start())
+
+            if not candidates:
                 return False
 
+            all_match_map = {m.start(): m for m in color_re.finditer(data)}
+            to_replace = sorted(
+                (m for pos, m in all_match_map.items() if pos in candidates),
+                key=lambda m: m.start(),
+                reverse=True,
+            )
+
             new_data = bytearray(data)
+            for m in to_replace:
+                repl = new_rg if m.group("op") == b"rg" else new_RG
+                new_data[m.start():m.end()] = repl
 
-            # replace all matches safely
-            for match in reversed(matches):
-                new_data[match.start():match.end()] = new_op
-
-            write_stream(stream, bytes(new_data), was_compressed)
+            write_stream(stream, bytes(new_data), decode_mode)
             return True
 
         changed = False
 
         if isinstance(contents, pikepdf.Stream):
             changed = replace_in_stream(contents)
-
         elif isinstance(contents, pikepdf.Array):
             for item in contents:
                 try:
                     stream = item.get_object()
                 except Exception:
                     stream = item
-
                 if isinstance(stream, pikepdf.Stream):
                     if replace_in_stream(stream):
                         changed = True
@@ -688,10 +748,10 @@ def _try_recolor_in_stream(
         return changed
 
     except Exception as exc:
-        logger.debug("_try_recolor_in_stream failed: %s", exc)
+        logger.debug("_try_recolor_in_stream failed: %s", exc, exc_info=True)
         return False
-
-
+    
+    
 def fix_1_4_1_color_only(
     pdf: pikepdf.Pdf,
     issues: list[dict],

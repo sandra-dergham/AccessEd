@@ -79,9 +79,19 @@ def annotate_pdf(original_pdf_path: str, issues: list[dict], doc_json: dict, out
             continue
 
         page = pdf.load_page(page_index)
-        rect = fitz.Rect(bbox)
 
-        annot= page.add_rect_annot(rect)
+        if not bbox or len(bbox) != 4:
+            print("Skipping issue with missing bbox:", issue)
+            continue
+
+        rect = fitz.Rect(bbox)
+        rect = rect + (-2, -2, 2, 2)
+
+        if not rect.is_valid or rect.is_empty:
+            print("Skipping invalid rect:", bbox)
+            continue
+
+        annot = page.add_rect_annot(rect)
         annot.set_colors(stroke=SEVERITY_COLORS[severity])
         annot.set_opacity(0.5)
         annot.set_border(width=1.2)

@@ -1,3 +1,4 @@
+from asyncio.log import logger
 import hashlib
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -201,14 +202,9 @@ def is_large_text(font: Dict[str, Any]) -> bool:
     bold = is_bold_font(font)
     return size >= 18.0 or (bold and size >= 14.0)
 
-
 def estimate_background_rgb_for_bbox(
     page: fitz.Page, bbox: List[float], scale: float = 2.0, grid: int = 8
 ) -> Optional[List[int]]:
-    """
-    Render page to an image and sample pixels under bbox.
-    Returns median RGB from sampled pixels.
-    """
     try:
         mat = fitz.Matrix(scale, scale)
         pix = page.get_pixmap(matrix=mat, alpha=False)
@@ -219,37 +215,74 @@ def estimate_background_rgb_for_bbox(
         return None
 
     x0, y0, x1, y1 = bbox
-    px0 = int(max(0, min(pix.width  - 1, round(x0 * scale))))
-    py0 = int(max(0, min(pix.height - 1, round(y0 * scale))))
-    px1 = int(max(0, min(pix.width  - 1, round(x1 * scale))))
-    py1 = int(max(0, min(pix.height - 1, round(y1 * scale))))
+    w = x1 - x0
+    h = y1 - y0
 
-    if px1 <= px0 or py1 <= py0:
-        return None
+    # Sample AROUND the bbox, never under it.
+    # This prevents dark text pixels from contaminating the background estimate
+    # when re-scanning an already-corrected PDF.
+    pad   = max(3.0, min(w, h) * 0.5)   # how far outside the bbox to sample
+    strip = max(2.0, min(w, h) * 0.3)   # thickness of the sampling strip
 
-    pad = max(1, int(min(px1 - px0, py1 - py0) * 0.12))
-    sx0 = min(px1 - 1, px0 + pad)
-    sy0 = min(py1 - 1, py0 + pad)
-    sx1 = max(px0 + 1, px1 - pad)
-    sy1 = max(py0 + 1, py1 - pad)
-
-    if sx1 <= sx0 or sy1 <= sy0:
-        sx0, sy0, sx1, sy1 = px0, py0, px1, py1
-
-    xs = np.linspace(sx0, sx1 - 1, grid).astype(int)
-    ys = np.linspace(sy0, sy1 - 1, grid).astype(int)
+    sample_regions = [
+        (x0,           y0 - pad - strip, x1,           y0 - pad),  # above
+        (x0,           y1 + pad,         x1,           y1 + pad + strip),  # below
+        (x0 - pad - strip, y0,           x0 - pad,     y1),  # left
+        (x1 + pad,     y0,               x1 + pad + strip, y1),  # right
+    ]
 
     samples = []
-    for yy in ys:
-        for xx in xs:
-            rgb = img[yy, xx, :3]
-            samples.append(rgb)
+
+    for (rx0, ry0, rx1, ry1) in sample_regions:
+        px0 = int(max(0, min(pix.width  - 1, round(rx0 * scale))))
+        py0 = int(max(0, min(pix.height - 1, round(ry0 * scale))))
+        px1 = int(max(0, min(pix.width  - 1, round(rx1 * scale))))
+        py1 = int(max(0, min(pix.height - 1, round(ry1 * scale))))
+
+        if px1 <= px0 or py1 <= py0:
+            continue
+
+        xs = np.linspace(px0, px1 - 1, grid).astype(int)
+        ys = np.linspace(py0, py1 - 1, grid).astype(int)
+
+        for yy in ys:
+            for xx in xs:
+                samples.append(img[yy, xx, :3])
+
+    # If all strips were clipped (bbox at page edge), fall back to sampling
+    # the brightest pixels in a slightly expanded region around the bbox —
+    # still avoiding the exact bbox area.
+    if not samples:
+        expand = 6
+        ex0 = int(max(0, round(x0 * scale) - expand))
+        ey0 = int(max(0, round(y0 * scale) - expand))
+        ex1 = int(min(pix.width  - 1, round(x1 * scale) + expand))
+        ey1 = int(min(pix.height - 1, round(y1 * scale) + expand))
+
+        tx0 = int(max(0, round(x0 * scale)))
+        ty0 = int(max(0, round(y0 * scale)))
+        tx1 = int(min(pix.width  - 1, round(x1 * scale)))
+        ty1 = int(min(pix.height - 1, round(y1 * scale)))
+
+        for yy in range(ey0, ey1 + 1):
+            for xx in range(ex0, ex1 + 1):
+                if tx0 <= xx <= tx1 and ty0 <= yy <= ty1:
+                    continue  # skip the actual text area
+                samples.append(img[yy, xx, :3])
 
     if not samples:
-        return None
+        return [255, 255, 255]  # hard fallback
 
     samples = np.array(samples)
-    med = np.median(samples, axis=0)
+
+    # Use the BRIGHTEST quartile, not the median.
+    # Background is almost always the lightest region; text pixels are dark.
+    # Taking the median risks including dark neighboring text or graphics.
+    luminances = 0.2126 * samples[:, 0] + 0.7152 * samples[:, 1] + 0.0722 * samples[:, 2]
+    threshold  = np.percentile(luminances, 75)  # top 25% brightest
+    bright     = samples[luminances >= threshold]
+
+    med = np.median(bright, axis=0)
     return [int(med[0]), int(med[1]), int(med[2])]
 
 
