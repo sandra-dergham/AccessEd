@@ -926,7 +926,6 @@ def fix_2_5_3_label_in_name(
 
     return results
 
-
 def fix_3_1_1_language(
     pdf: pikepdf.Pdf,
     issues: list[dict],
@@ -938,11 +937,13 @@ def fix_3_1_1_language(
     targets = _filter_issues(issues, "3.1.1", "language_of_page")
     if not targets:
         return results
+
     lang = _get_doc(doc_json).get("inferred_language")
     if not lang:
         results.append(_skipped("3.1.1", "language_of_page",
                                 "inferred_language not available"))
         return results
+
     pdf.Root["/Lang"] = pikepdf.String(lang)
     results.append(_fixed("3.1.1", "language_of_page",
                           f"Set document language to '{lang}'"))
@@ -955,32 +956,29 @@ def fix_2_4_2_title(
     doc_json: dict,
     original_pdf_path: str,
 ) -> list[dict]:
-    """WCAG 2.4.2 — page_titled: derive title from headings/spans and write to PDF metadata."""
+    """WCAG 2.4.2 — page_titled: derive title from heading candidates and write to PDF metadata.
+
+    Only uses heading candidates — the first non-empty span fallback was removed
+    because it reliably produced bad titles (page numbers, dates, logo labels).
+    """
     results = []
     targets = _filter_issues(issues, "2.4.2", "page_titled")
     if not targets:
         return results
 
-    span_lookup = _build_span_lookup(doc_json)
-
-    title = None
+    span_lookup        = _build_span_lookup(doc_json)
     heading_candidates = _get_doc(doc_json).get("heading_candidates", [])
+    title              = None
 
     if heading_candidates:
         span = span_lookup.get(heading_candidates[0])
         if span:
             title = span.get("text", "").strip()
 
-    if not title:
-        for span in _get_doc(doc_json).get("text_spans", []):
-            text = span.get("text", "").strip()
-            if text:
-                title = text
-                break
-
+    # No reliable title source — skip rather than write a worse title
     if not title:
         results.append(_skipped("2.4.2", "page_titled",
-                                "Could not derive title from document content"))
+                                "No heading candidates found — cannot derive a reliable title"))
         return results
 
     title = title[:80]
@@ -996,14 +994,18 @@ def fix_2_4_1_and_2_4_5_bookmarks(
     doc_json: dict,
     original_pdf_path: str,
 ) -> list[dict]:
-    """WCAG 2.4.1 / 2.4.5 — bypass_blocks / multiple_ways: build bookmarks from heading candidates."""
+    """WCAG 2.4.1 / 2.4.5 — bypass_blocks / multiple_ways: build bookmarks from heading candidates.
+
+    Each outline item now carries a /Parent reference as required by the PDF spec,
+    so readers that validate the outline tree do not silently drop the bookmarks.
+    """
     results = []
     has_241 = bool(_filter_issues(issues, "2.4.1"))
     has_245 = bool(_filter_issues(issues, "2.4.5"))
     if not has_241 and not has_245:
         return results
 
-    span_lookup = _build_span_lookup(doc_json)
+    span_lookup        = _build_span_lookup(doc_json)
     heading_candidates = _get_doc(doc_json).get("heading_candidates", [])
 
     if not heading_candidates:
@@ -1031,12 +1033,12 @@ def fix_2_4_1_and_2_4_5_bookmarks(
         return results
 
     # Infer heading levels from font size
-    unique_sizes = sorted(set(h["font_size"] for h in headings), reverse=True)
-    size_to_level = {size: (i + 1) for i, size in enumerate(unique_sizes)}
+    unique_sizes   = sorted(set(h["font_size"] for h in headings), reverse=True)
+    size_to_level  = {size: (i + 1) for i, size in enumerate(unique_sizes)}
     for h in headings:
         h["level"] = size_to_level[h["font_size"]]
 
-    # Build pikepdf outline items
+    # Build pikepdf outline items (without /Parent yet — added after root is created)
     items = []
     for h in headings:
         page_ref = pdf.pages[h["page_index"]].obj
@@ -1054,12 +1056,17 @@ def fix_2_4_1_and_2_4_5_bookmarks(
         if i < len(items) - 1:
             item["/Next"] = items[i + 1]
 
-    # Build root /Outlines dictionary and write to PDF
+    # Build root /Outlines dictionary
     outline_root = pdf.make_indirect(pikepdf.Dictionary(
         Count=pikepdf.Integer(len(items)),
         First=items[0],
         Last=items[-1],
     ))
+
+    # Link each item back to the root — required by PDF spec
+    for item in items:
+        item["/Parent"] = outline_root
+
     pdf.Root["/Outlines"] = outline_root
 
     for criterion in (["2.4.1"] if has_241 else []) + (["2.4.5"] if has_245 else []):
@@ -1067,14 +1074,13 @@ def fix_2_4_1_and_2_4_5_bookmarks(
                               f"Added {len(items)} bookmarks from heading candidates"))
     return results
 
-
 def fix_2_4_4_link_purpose(
     pdf: pikepdf.Pdf,
     issues: list[dict],
     doc_json: dict,
     original_pdf_path: str,
 ) -> list[dict]:
-    """WCAG 2.4.4 — link_purpose: use OpenAI to suggest labels, then write /Contents to annotation."""
+
     import urllib.parse
     from app.services.openai_client import get_openai_client
 
@@ -1083,18 +1089,10 @@ def fix_2_4_4_link_purpose(
     if not targets:
         return results
 
-    links = _get_doc(doc_json).get("links", [])
+    links       = _get_doc(doc_json).get("links", [])
     link_lookup = {lnk["id"]: lnk for lnk in links if lnk.get("id")}
-    span_lookup = _build_span_lookup(doc_json)
 
-    # Initialise client once
-    try:
-        client = get_openai_client()
-    except RuntimeError as exc:
-        for iss in targets:
-            results.append(_skipped("2.4.4", "link_purpose",
-                                    f"OpenAI unavailable: {exc}"))
-        return results
+    client = None
 
     for iss in targets:
         location   = iss.get("location", {})
@@ -1107,9 +1105,8 @@ def fix_2_4_4_link_purpose(
                                     "Link not found in doc_json"))
             continue
 
-        uri       = link.get("uri", "") or ""
-        bbox      = link.get("bbox", [])
-        link_text = link.get("text", "") or ""
+        uri  = link.get("uri", "") or ""
+        bbox = link.get("bbox", [])
 
         if not uri:
             results.append(_skipped("2.4.4", link_id,
@@ -1118,25 +1115,28 @@ def fix_2_4_4_link_purpose(
 
         label = None
 
-        # Case A — link text is a raw URL, clean it up
-        if uri.lower() in link_text.lower() or link_text.startswith("http"):
+        # Case A — URL has a readable path segment
+        parsed = urllib.parse.urlparse(uri)
+        path   = parsed.path.rstrip("/")
+        if path and path != "/":
+            segment = path.split("/")[-1]
+            segment = segment.rsplit(".", 1)[0] if "." in segment else segment
+            segment = segment.replace("-", " ").replace("_", " ").strip()
+            if len(segment) > 3:
+                label = segment.title()[:60]
+
+        # Case B — opaque URL, clean up domain
+        if not label:
             clean = uri.replace("https://", "").replace("http://", "").rstrip("/")
-            label = clean[:60]
+            if len(clean) <= 60:
+                label = clean
 
-        # Case B — vague text but URL has a readable path segment
-        if not label:
-            parsed  = urllib.parse.urlparse(uri)
-            path    = parsed.path.rstrip("/")
-            if path and path != "/":
-                segment = path.split("/")[-1]
-                segment = segment.rsplit(".", 1)[0] if "." in segment else segment
-                segment = segment.replace("-", " ").replace("_", " ").strip()
-                if len(segment) > 3:
-                    label = segment.title()[:60]
-
-        # Case C — opaque URL, use OpenAI
-        if not label:
+        # Case C — use GPT-4o for context-aware label
+        if not label or len(label) < 4:
             try:
+                if client is None:
+                    client = get_openai_client()
+
                 context_spans = [
                     s.get("text", "") for s in
                     _get_doc(doc_json).get("text_spans", [])
@@ -1145,9 +1145,8 @@ def fix_2_4_4_link_purpose(
                 context = " ".join(context_spans)[:300]
 
                 prompt = (
-                    f"A PDF link has vague text: \"{link_text}\". "
-                    f"The link URL is: {uri}. "
-                    f"Surrounding text: {context}. "
+                    f"A PDF link points to: {uri}. "
+                    f"Surrounding page text: {context}. "
                     f"Write a short descriptive label (max 60 characters) "
                     f"that clearly describes where this link goes. "
                     f"Return ONLY the label. No explanation."
@@ -1159,6 +1158,10 @@ def fix_2_4_4_link_purpose(
                     messages=[{"role": "user", "content": prompt}],
                 )
                 label = response.choices[0].message.content.strip()[:60]
+            except RuntimeError as exc:
+                results.append(_skipped("2.4.4", link_id,
+                                        f"OpenAI unavailable: {exc}"))
+                continue
             except Exception as exc:
                 logger.warning("GPT-4o failed for link %s: %s", link_id, exc)
                 results.append(_skipped("2.4.4", link_id,
@@ -1169,23 +1172,43 @@ def fix_2_4_4_link_purpose(
             results.append(_skipped("2.4.4", link_id, "Could not generate a label"))
             continue
 
-        # Write label as /Contents on the link annotation
+        # Convert PyMuPDF coords to PDF annotation coords
+        try:
+            page_height = float(pdf.pages[page_index].mediabox[3])
+        except Exception:
+            results.append(_skipped("2.4.4", link_id,
+                                    "Could not read page height for coordinate conversion"))
+            continue
+
+        if bbox and len(bbox) == 4:
+            pdf_x0 = bbox[0]
+            pdf_y0 = page_height - bbox[3]
+        else:
+            results.append(_skipped("2.4.4", link_id, "Link has no bbox"))
+            continue
+
+        # Write label to matching link annotation  ← INSIDE the for loop
         try:
             page_obj = pdf.pages[page_index]
-            annots   = page_obj.get("/Annots", [])
+            annots   = page_obj.get("/Annots") or []
             written  = False
 
             for annot_ref in annots:
-                annot = annot_ref.get_object()
+                try:
+                    annot = annot_ref if isinstance(annot_ref, pikepdf.Dictionary) else annot_ref.get_object()
+                except Exception:
+                    continue
+
                 if str(annot.get("/Subtype", "")) != "/Link":
                     continue
                 rect = annot.get("/Rect")
-                if rect and bbox:
-                    r = [float(x) for x in rect]
-                    if abs(r[0] - bbox[0]) < 5 and abs(r[1] - bbox[1]) < 5:
-                        annot["/Contents"] = pikepdf.String(label)
-                        written = True
-                        break
+                if not rect:
+                    continue
+                r = [float(x) for x in rect]
+                if abs(r[0] - pdf_x0) < 5 and abs(r[1] - pdf_y0) < 5:
+                    annot["/Contents"] = pikepdf.String(label)
+                    written = True
+                    break
 
             if written:
                 results.append(_fixed("2.4.4", link_id,
@@ -1198,8 +1221,7 @@ def fix_2_4_4_link_purpose(
                                     f"Failed to write to PDF: {exc}"))
 
     return results
-
-
+       
 def fix_3_3_2_form_tooltips(
     pdf: pikepdf.Pdf,
     issues: list[dict],
