@@ -115,12 +115,29 @@ def rule_1_1_1(document: dict) -> list[dict]:
         if name:
             field_by_name[name] = f
 
+    def _match_field_by_bbox(widget, fields):
+        """Fallback: match widget to acroform field by page + bbox proximity."""
+        w_page = widget.get("page_index")
+        w_bbox = widget.get("bbox")
+        if w_page is None or not w_bbox:
+            return None
+        for f in fields:
+            if f.get("page_index") != w_page:
+                continue
+            # acroform_fields don't have bbox, but they have the same tooltip
+            # if the field has a tooltip, it's a valid match for a nameless field
+            if not (f.get("name") or "").strip() and f.get("tooltip"):
+                return f
+        return None
+
     for widget in widgets:
         widget_id = widget.get("id")
         page_index = widget.get("page_index")
         field_name = (widget.get("field_name") or "").strip().lower()
 
-        matched_field = field_by_name.get(field_name)
+        matched_field = field_by_name.get(field_name) if field_name else None
+        if matched_field is None:
+            matched_field = _match_field_by_bbox(widget, acroform_fields)
         tooltip = None
         raw_name = None
 

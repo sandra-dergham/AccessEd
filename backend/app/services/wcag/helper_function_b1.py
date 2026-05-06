@@ -2316,7 +2316,68 @@ def sample_widget_border_rgb(
         return None
 
     pixels = np.vstack(samples)
-    return median_rgb_from_pixels(pixels)  
+    return median_rgb_from_pixels(pixels) 
+
+def _read_mk_border_color_pikepdf(pdf_path: str, page_index: int, bbox: list, tolerance: float = 5.0) -> Optional[List[int]]:
+    """
+    Fallback: read border color from /MK /BC on the AcroForm field
+    matching this widget by page + bbox. Returns RGB 0-255 or None.
+    """
+    try:
+        with pikepdf.open(pdf_path) as pdf:
+            acroform = pdf.Root.get("/AcroForm")
+            if acroform is None:
+                return None
+            fields = acroform.get("/Fields")
+            if not fields:
+                return None
+
+            page_height = float(pdf.pages[page_index].mediabox[3])
+            # Convert PyMuPDF bbox to PDF coords for matching
+            pdf_x0 = bbox[0]
+            pdf_y0 = page_height - bbox[3]
+            pdf_x1 = bbox[2]
+            pdf_y1 = page_height - bbox[1]
+
+            def close(a, b):
+                return abs(a - b) < tolerance
+
+            def check(node):
+                if not isinstance(node, pikepdf.Dictionary):
+                    try:
+                        node = node.get_object()
+                    except Exception:
+                        return None
+                # Check /Rect
+                rect = node.get("/Rect")
+                if rect is not None:
+                    try:
+                        r = [float(x) for x in rect]
+                        if close(r[0], pdf_x0) and close(r[1], pdf_y0) and close(r[2], pdf_x1) and close(r[3], pdf_y1):
+                            mk = node.get("/MK")
+                            if isinstance(mk, pikepdf.Dictionary):
+                                bc = mk.get("/BC")
+                                if bc is not None and len(bc) >= 3:
+                                    return [int(round(float(bc[i]) * 255)) for i in range(3)]
+                            return None
+                    except Exception:
+                        pass
+                kids = node.get("/Kids")
+                if isinstance(kids, pikepdf.Array):
+                    for kid in kids:
+                        found = check(kid)
+                        if found is not None:
+                            return found
+                return None
+
+            for field_ref in fields:
+                result = check(field_ref)
+                if result is not None:
+                    return result
+    except Exception:
+        pass
+    return None
+
 def annotate_widgets_non_text_contrast(
     doc: fitz.Document,
     widgets: List[Dict[str, Any]],
@@ -2356,7 +2417,7 @@ def annotate_widgets_non_text_contrast(
                 "contrast_against_border": contrast_against_border,
                 "border_rgb": border_rgb,
                 "passes_3_1": contrast_against_border >= 3.0 if contrast_against_border is not None else None
-            }          
+            }      
          
 def graphic_overlaps_widget(graphic: Dict[str, Any], widgets: List[Dict[str, Any]], margin: float = 2.0) -> bool:
     gb = graphic.get("bbox")

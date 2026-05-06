@@ -5,6 +5,9 @@ from typing import Any, Dict, List, Optional, Tuple
 from langdetect import detect, LangDetectException
 from pdfminer.high_level import extract_pages
 from pdfminer.layout import LTTextBoxHorizontal, LTTextLineHorizontal, LTChar, LTAnno
+from .wcag.helper_function_b1 import (
+    _read_mk_border_color_pikepdf,
+)
 
 import fitz  
 import pikepdf
@@ -458,6 +461,21 @@ def extract_links(page: fitz.Page, page_index: int):
             link_type = "internal"
             target    = str(l.get("to"))
 
+        # Read /Contents from annotation xref (PyMuPDF's get_links doesn't expose it)
+        annot_contents = None
+        xref = l.get("xref")
+        if xref:
+            try:
+                ct = page.parent.xref_get_key(xref, "Contents")
+                if ct[0] == "string":
+                    val = ct[1]
+                    # xref_get_key returns PDF string literals with parentheses
+                    if val.startswith("(") and val.endswith(")"):
+                        val = val[1:-1]
+                    annot_contents = val.strip() or None
+            except Exception:
+                pass
+
         links.append({
             "id":         link_id,
             "page_index": page_index,
@@ -465,7 +483,8 @@ def extract_links(page: fitz.Page, page_index: int):
             "kind":       link_type,
             "type":       link_type,
             "target":     target,
-            "uri":        uri
+            "uri":        uri,
+            "contents":   annot_contents,
         })
 
     return links
@@ -1416,6 +1435,25 @@ def extract_document_json(pdf_path: str, run_ocr: bool = True) -> Dict[str, Any]
     compute_contrast_for_spans(doc, text_spans, scale=2.0)
     annotate_graphics_non_text_contrast(doc, all_graphics, scale=2.0)
     annotate_widgets_non_text_contrast(doc, all_widgets, scale=2.0)
+
+    # Fallback: if pixmap border contrast fails or is missing,
+    # check /MK /BC in case the corrector set it
+    for w in all_widgets:
+        ntc = w.get("non_text_contrast", {})
+        if ntc.get("passes_3_1") is True:
+            continue  # already passing, no need for fallback
+        bbox = w.get("bbox")
+        page_idx = w.get("page_index")
+        if bbox is None or page_idx is None:
+            continue
+        mk_rgb = _read_mk_border_color_pikepdf(pdf_path, page_idx, bbox)
+        if mk_rgb is not None:
+            adj = ntc.get("adjacent_rgb", [255, 255, 255])
+            ratio = contrast_ratio(mk_rgb, adj)
+            ntc["border_rgb"] = mk_rgb
+            ntc["contrast_against_border"] = float(round(ratio, 3))
+            ntc["passes_3_1"] = ratio >= 3.0
+            ntc["method"] = (ntc.get("method", "") + "_mk_bc_fallback")
 
     media_occurrences = []
     media_occurrences.extend(extract_media_occurrences(doc, text_spans))

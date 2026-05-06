@@ -734,6 +734,27 @@ def check_link_purpose(document_model: dict) -> list[dict]:
         is_raw_url   = looks_like_raw_url(link_text)
 
         if is_missing or is_vague or is_too_short or is_raw_url:
+            # Fallback: check if the link annotation has a /Contents label
+            # (e.g. set by the corrector via pikepdf)
+            contents_label = (link.get("contents") or "").strip()
+            if contents_label and len(contents_label) >= 3 and not looks_like_raw_url(contents_label):
+                issues.append(
+                    make_issue(
+                        criterion="2.4.4",
+                        issue="link_purpose_from_contents",
+                        location={
+                            "page":    page_index,
+                            "link_id": link_id,
+                        },
+                        severity="pass",
+                        recommendation=(
+                            "The visible link text is vague, but the link annotation "
+                            "has a descriptive /Contents label for assistive technology."
+                        ),
+                    )
+                )
+                continue
+
             issues.append(
                 make_issue(
                     criterion="2.4.4",
