@@ -13,6 +13,7 @@ app.add_middleware(
     allow_origins=[
         "http://localhost:5173",
         "https://access-ed-swart.vercel.app",
+        "https://accessed-ivory.vercel.app",
     ],
     allow_credentials=True,
     allow_methods=["*"],
