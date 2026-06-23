@@ -77,12 +77,12 @@ def add_summary_row(pdf: FPDF, score: dict):
     breakdown = score.get("breakdown", {})
 
     items = [
-         ("N/A", str(score.get("not_applicable", 0)), (248, 250, 252), (100, 116, 139)),
-        ("NEEDS REVIEW", str(score.get("needs_review", 0)), (239, 246, 255), (37, 99, 235)),
-        ("PASS", str(breakdown.get("pass", 0)), (236, 253, 245), (5, 150, 105)),
-        ("LOW", str(breakdown.get("low", 0)), (254, 252, 232), (161, 98, 7)),
-        ("MEDIUM", str(breakdown.get("medium", 0)), (255, 237, 213), (194, 65, 12)),
-        ("HIGH", str(breakdown.get("high", 0)), (254, 226, 226), (185, 28, 28)),
+        ("N/A",          str(score.get("not_applicable", 0)), (248, 250, 252), (71, 85, 105)),
+        ("NEEDS REVIEW", str(score.get("needs_review", 0)),   (239, 246, 255), (29, 78, 216)),
+        ("PASS",         str(breakdown.get("pass", 0)),        (236, 253, 245), (2, 101, 70)),
+        ("LOW",          str(breakdown.get("low", 0)),         (254, 252, 232), (120, 72, 0)),
+        ("MEDIUM",       str(breakdown.get("medium", 0)),      (255, 237, 213), (154, 52, 18)),
+        ("HIGH",         str(breakdown.get("high", 0)),        (254, 226, 226), (153, 27, 27)),
     ]
 
     left = pdf.l_margin
@@ -210,24 +210,28 @@ def add_scoring_methodology(pdf: FPDF):
 
     left = pdf.l_margin
     total_width = pdf.w - pdf.l_margin - pdf.r_margin
-    gap = 4
-    col_w = (total_width - gap * 3) / 4
+    sev_w    = 35
+    weight_w = 20
+    gap      = 5
+    meaning_w = total_width - sev_w - weight_w - gap * 2
 
     rows = [
-        ("PASS",         "1.00", "No violation detected. Full credit.",          (236, 253, 245), (5, 150, 105)),
-        ("LOW",          "0.75", "Minor gap, mostly compliant.",                 (254, 252, 232), (161, 98, 7)),
-        ("MEDIUM",       "0.25", "Confirmed violation, moderate AT impact.",     (255, 237, 213), (194, 65, 12)),
-        ("HIGH",         "0.00", "Confirmed violation, severe AT impact.",       (254, 226, 226), (185, 28, 28)),
+        ("PASS",   "1.00", "No violation detected. Full credit.",         (236, 253, 245), (2, 101, 70)),
+        ("LOW",    "0.75", "Minor gap, mostly compliant.",                (254, 252, 232), (120, 72, 0)),
+        ("MEDIUM", "0.25", "Confirmed violation, moderate AT impact.",    (255, 237, 213), (154, 52, 18)),
+        ("HIGH",   "0.00", "Confirmed violation, severe AT impact.",      (254, 226, 226), (153, 27, 27)),
     ]
 
     # Header
     y = pdf.get_y()
-    headers = ["Severity", "Weight", "Meaning", ""]
     pdf.set_font("Helvetica", "B", 9)
     pdf.set_text_color(71, 85, 105)
-    for i, h in enumerate(headers[:3]):
-        pdf.set_xy(left + i * (col_w + gap), y)
-        pdf.cell(col_w, 6, h)
+    pdf.set_xy(left, y)
+    pdf.cell(sev_w, 6, "Severity")
+    pdf.set_xy(left + sev_w + gap, y)
+    pdf.cell(weight_w, 6, "Weight")
+    pdf.set_xy(left + sev_w + weight_w + gap * 2, y)
+    pdf.cell(meaning_w, 6, "Meaning")
     pdf.ln(7)
 
     for label, weight, meaning, bg, fg in rows:
@@ -236,23 +240,23 @@ def add_scoring_methodology(pdf: FPDF):
         # Badge
         pdf.set_fill_color(*bg)
         pdf.set_draw_color(226, 232, 240)
-        pdf.rect(left, y + 1, col_w, 7, style="DF")
+        pdf.rect(left, y + 1, sev_w, 7, style="DF")
         pdf.set_xy(left, y + 2)
         pdf.set_font("Helvetica", "B", 8)
         pdf.set_text_color(*fg)
-        pdf.cell(col_w, 5, label, align="C")
+        pdf.cell(sev_w, 5, label, align="C")
 
         # Weight
-        pdf.set_xy(left + col_w + gap, y + 2)
+        pdf.set_xy(left + sev_w + gap, y + 2)
         pdf.set_font("Helvetica", "B", 10)
         pdf.set_text_color(15, 23, 42)
-        pdf.cell(col_w, 5, weight, align="C")
+        pdf.cell(weight_w, 5, weight, align="C")
 
         # Meaning
-        pdf.set_xy(left + 2 * (col_w + gap), y + 2)
+        pdf.set_xy(left + sev_w + weight_w + gap * 2, y + 2)
         pdf.set_font("Helvetica", "", 9)
         pdf.set_text_color(71, 85, 105)
-        pdf.cell(col_w * 2, 5, meaning)
+        pdf.multi_cell(meaning_w, 5, meaning)
 
         pdf.ln(9)
 
@@ -264,11 +268,11 @@ def add_scoring_methodology(pdf: FPDF):
     pdf.ln(7)
 
     grades = [
-        ("A", "90-100", (236, 253, 245), (5, 150, 105)),
-        ("B", "75-89",  (239, 246, 255), (37, 99, 235)),
-        ("C", "50-74",  (254, 252, 232), (161, 98, 7)),
-        ("D", "25-49",  (255, 237, 213), (194, 65, 12)),
-        ("F", "0-24",   (254, 226, 226), (185, 28, 28)),
+        ("A", "90-100", (236, 253, 245), (2, 101, 70)),
+        ("B", "75-89",  (239, 246, 255), (29, 78, 216)),
+        ("C", "50-74",  (254, 252, 232), (120, 72, 0)),
+        ("D", "25-49",  (255, 237, 213), (154, 52, 18)),
+        ("F", "0-24",   (254, 226, 226), (153, 27, 27)),
     ]
 
     grade_w = (total_width - gap * 4) / 5
@@ -291,7 +295,7 @@ def add_scoring_methodology(pdf: FPDF):
 
     pdf.set_text_color(0, 0, 0)
     pdf.set_y(y + 22)
-
+    
 def add_overview(pdf: FPDF, meta: dict):
     add_section_title(pdf, "Document Overview")
 
@@ -325,24 +329,24 @@ def add_issue_block(pdf: FPDF, issue: Dict[str, Any]):
 
     severity_styles = {
         "high": {
-            "badge_bg": (254, 226, 226),
-            "badge_text": (185, 28, 28),
-            "accent": (239, 68, 68),
+            "badge_bg":   (254, 226, 226),
+            "badge_text": (153, 27, 27),
+            "accent":     (239, 68, 68),
         },
         "medium": {
-            "badge_bg": (255, 237, 213),
-            "badge_text": (194, 65, 12),
-            "accent": (249, 115, 22),
+            "badge_bg":   (255, 237, 213),
+            "badge_text": (154, 52, 18),
+            "accent":     (194, 65, 12),
         },
         "low": {
-            "badge_bg": (254, 252, 232),
-            "badge_text": (161, 98, 7),
-            "accent": (234, 179, 8),
+            "badge_bg":   (254, 252, 232),
+            "badge_text": (120, 72, 0),
+            "accent":     (120, 72, 0),
         },
         "needs_review": {
-            "badge_bg": (239, 246, 255),
-            "badge_text": (37, 99, 235),
-            "accent": (59, 130, 246),
+            "badge_bg":   (239, 246, 255),
+            "badge_text": (29, 78, 216),
+            "accent":     (29, 78, 216),
         },
     }
 
@@ -445,7 +449,7 @@ def add_issue_block(pdf: FPDF, issue: Dict[str, Any]):
     pdf.set_y(start_y + block_h + 5)
 
 
-def build_pdf_report(report: Dict[str, Any], output_path: str):
+def build_pdf_report(report: Dict[str, Any], output_path: str) -> list[tuple[str, int]]:
     meta = report.get("meta", {})
     score = report.get("score", {})
     issues = report.get("issues", [])
@@ -461,13 +465,17 @@ def build_pdf_report(report: Dict[str, Any], output_path: str):
     pdf.set_left_margin(15)
     pdf.set_right_margin(15)
 
+    bookmarks = []
+
     pdf.add_page()
+    bookmarks.append(("Accessibility Report", pdf.page))
     add_title_page(pdf)
-    add_overview(pdf,meta)
-    add_score_block(pdf,score)
+    add_overview(pdf, meta)
+    add_score_block(pdf, score)
     add_scoring_methodology(pdf)
-    
+
     pdf.add_page()
+    bookmarks.append(("Executive Summary", pdf.page))
     add_section_title(pdf, "Executive Summary")
     add_paragraph(
         pdf,
@@ -475,14 +483,15 @@ def build_pdf_report(report: Dict[str, Any], output_path: str):
         "Checks marked as pass or not applicable are summarized above and are not listed in detail."
     )
 
+    bookmarks.append(("Detailed Findings", pdf.page))
     add_section_title(pdf, "Detailed Findings")
 
     severity_sections = [
-    ("high", "High Severity Issues"),
-    ("medium", "Medium Severity Issues"),
-    ("low", "Low Severity Issues"),
-    ("needs_review", "Needs Review"),
-]
+        ("high",         "High Severity Issues"),
+        ("medium",       "Medium Severity Issues"),
+        ("low",          "Low Severity Issues"),
+        ("needs_review", "Needs Review"),
+    ]
 
     any_issue = False
     for key, label in severity_sections:
@@ -491,28 +500,140 @@ def build_pdf_report(report: Dict[str, Any], output_path: str):
             continue
 
         any_issue = True
-        
         pdf.ln(2)
 
-        for issue in severity_issues:
+        for i, issue in enumerate(severity_issues):
             add_issue_block(pdf, issue)
+            if i == 0:
+                # Capture page after first block renders — this is the actual page
+                # the section landed on, accounting for any internal page breaks
+                bookmarks.append((label, pdf.page))
 
     if not any_issue:
         add_paragraph(pdf, "No actionable accessibility issues were found.")
 
     pdf.output(output_path)
+    return bookmarks
 
 #wrapper
 def build_report_pdf(report_json: dict) -> bytes:
-    import tempfile, os
+    import tempfile
+    import os
+    import pikepdf
+
     with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
         tmp_path = tmp.name
+    tagged_path = tmp_path + "_tagged.pdf"
+
     try:
-        build_pdf_report(report_json, tmp_path)
-        with open(tmp_path, "rb") as f:
+        # Step 1: generate raw fpdf2 PDF to disk, get bookmark positions
+        bookmarks = build_pdf_report(report_json, tmp_path)
+
+        # Step 2: pikepdf post-processing
+        with pikepdf.open(tmp_path) as pdf:
+
+            # --- Metadata: title and language ---
+            meta_title = report_json.get("meta", {}).get("title") or "Accessibility Report"
+            with pdf.open_metadata() as meta:
+                meta["dc:title"] = meta_title
+                meta["dc:language"] = "en"
+
+            # --- /Info dictionary ---
+            pdf.docinfo["/Title"] = meta_title
+            pdf.docinfo["/Lang"] = "en"
+
+            # --- /ViewerPreferences ---
+            pdf.Root["/ViewerPreferences"] = pikepdf.Dictionary(
+                DisplayDocTitle=True
+            )
+
+            # --- /Lang on catalog ---
+            pdf.Root["/Lang"] = pikepdf.String("en")
+
+            # --- /MarkInfo ---
+            pdf.Root["/MarkInfo"] = pikepdf.Dictionary(
+                Marked=True
+            )
+
+            # --- /StructTreeRoot ---
+            def make_heading(role: str, title: str) -> pikepdf.Dictionary:
+                return pikepdf.Dictionary(
+                    Type=pikepdf.Name("/StructElem"),
+                    S=pikepdf.Name(f"/{role}"),
+                    T=pikepdf.String(title),
+                    Alt=pikepdf.String(title),
+                    K=pikepdf.Array([]),
+                )
+
+            heading_nodes = [
+                pdf.make_indirect(make_heading("H1", "Accessibility Report")),
+                pdf.make_indirect(make_heading("H2", "Document Overview")),
+                pdf.make_indirect(make_heading("H2", "Accessibility Score")),
+                pdf.make_indirect(make_heading("H2", "How This Score Is Calculated")),
+                pdf.make_indirect(make_heading("H2", "Executive Summary")),
+                pdf.make_indirect(make_heading("H2", "Detailed Findings")),
+            ]
+
+            struct_tree = pikepdf.Dictionary(
+                Type=pikepdf.Name("/StructTreeRoot"),
+                K=pikepdf.Array(heading_nodes),
+                ParentTree=pikepdf.Dictionary(
+                    Nums=pikepdf.Array([])
+                ),
+                RoleMap=pikepdf.Dictionary(),
+            )
+            pdf.Root["/StructTreeRoot"] = pdf.make_indirect(struct_tree)
+
+            # --- Bookmarks / Document Outline ---
+            # Satisfies WCAG 2.4.1 (bypass blocks) and 2.4.5 (multiple ways)
+            if bookmarks:
+                outline_items = []
+                for title, page_num in bookmarks:
+                    page_idx = page_num - 1
+                    if page_idx >= len(pdf.pages):
+                        continue
+
+                    page_obj = pdf.pages[page_idx].obj
+
+                    dest = pikepdf.Array([
+                        page_obj,
+                        pikepdf.Name("/Fit"),
+                    ])
+
+                    outline_item = pdf.make_indirect(pikepdf.Dictionary(
+                        Title=pikepdf.String(title),
+                        Dest=dest,
+                    ))
+                    outline_items.append(outline_item)
+
+                for i, item in enumerate(outline_items):
+                    if i > 0:
+                        item["/Prev"] = outline_items[i - 1]
+                    if i < len(outline_items) - 1:
+                        item["/Next"] = outline_items[i + 1]
+
+                outlines = pdf.make_indirect(pikepdf.Dictionary(
+                    Type=pikepdf.Name("/Outlines"),
+                    First=outline_items[0],
+                    Last=outline_items[-1],
+                    Count=pikepdf.Integer(len(outline_items)),
+                ))
+
+                for item in outline_items:
+                    item["/Parent"] = outlines
+
+                pdf.Root["/Outlines"] = outlines
+                pdf.Root["/PageMode"] = pikepdf.Name("/UseOutlines")
+
+            pdf.save(tagged_path)
+
+        with open(tagged_path, "rb") as f:
             return f.read()
+
     finally:
-        try:
-            os.remove(tmp_path)
-        except OSError:
-            pass
+        for path in (tmp_path, tagged_path):
+            try:
+                if os.path.exists(path):
+                    os.remove(path)
+            except OSError:
+                pass

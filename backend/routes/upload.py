@@ -94,6 +94,7 @@ async def upload_pdf(background_tasks: BackgroundTasks, file: UploadFile = File(
         from app.services.wcag.detector import run_wcag_detector
         issues = run_wcag_detector(doc_json)
     except Exception as e:
+        _cleanup(out_path)                                          # FIX: was missing
         raise HTTPException(status_code=500, detail=f"WCAG detection failed: {e}")
 
     try:
@@ -101,6 +102,7 @@ async def upload_pdf(background_tasks: BackgroundTasks, file: UploadFile = File(
         document_meta = doc_json.get("document", {}).get("metadata", {})
         report = build_report(document_meta, issues)
     except Exception as e:
+        _cleanup(out_path)                                          # FIX: out_path added (report_json not yet created at this point)
         raise HTTPException(status_code=500, detail=f"Report building failed: {e}")
 
     report_json_path = os.path.join(UPLOAD_DIR, f"{upload_id}_report.json")
@@ -108,14 +110,17 @@ async def upload_pdf(background_tasks: BackgroundTasks, file: UploadFile = File(
         with open(report_json_path, "w", encoding="utf-8") as f:
             json.dump(report, f)
     except Exception as e:
+        _cleanup(out_path)
         raise HTTPException(status_code=500, detail=f"Failed to save report: {e}")
 
     pdf_out_path = os.path.join(UPLOAD_DIR, f"{upload_id}_report.pdf")
     try:
-        from app.services.wcag.report_builder import build_pdf_report
-        build_pdf_report(report, pdf_out_path)
+        from app.services.wcag.report_builder import build_report_pdf  # FIX: was build_pdf_report
+        pdf_bytes = build_report_pdf(report)                            # FIX: wrapper returns bytes
+        with open(pdf_out_path, "wb") as f:                            # FIX: write bytes to disk
+            f.write(pdf_bytes)
     except Exception as e:
-        _cleanup( report_json_path)
+        _cleanup(report_json_path)
         raise HTTPException(status_code=500, detail=f"PDF generation failed: {e}")
 
     corrected_path = os.path.join(UPLOAD_DIR, f"{upload_id}_corrected.pdf")
@@ -130,25 +135,26 @@ async def upload_pdf(background_tasks: BackgroundTasks, file: UploadFile = File(
     except Exception as e:
         correction_result = {"status": "failed", "error": str(e)}
         corrected_path = None
+
     annotated_path = os.path.join(UPLOAD_DIR, f"{upload_id}_annotated.pdf")
     annotate_pdf(
-            original_pdf_path=out_path,
-            issues=issues,
-            doc_json=doc_json,
-            output_path=annotated_path,
-        )
+        original_pdf_path=out_path,
+        issues=issues,
+        doc_json=doc_json,
+        output_path=annotated_path,
+    )
 
     _cleanup(out_path)
 
     if background_tasks is not None:
-                background_tasks.add_task(
-                            delayed_cleanup,
-                                180,
-                                report_json_path,
-                                pdf_out_path,
-                                corrected_path,
-                                annotated_path,
-                                )
+        background_tasks.add_task(
+            delayed_cleanup,
+            180,
+            report_json_path,
+            pdf_out_path,
+            corrected_path,
+            annotated_path,
+        )
 
     return {
         "upload_id":         upload_id,

@@ -2447,27 +2447,51 @@ def is_likely_layout_or_decorative_graphic(
     area = w * h
     page_area = page_width * page_height if page_width > 0 and page_height > 0 else 0
 
-    fill_rgb = graphic.get("fill_rgb")
-    gtype = graphic.get("type")
+    fill_rgb   = graphic.get("fill_rgb")
+    stroke_rgb = graphic.get("stroke_rgb")
+    gtype      = graphic.get("type")
 
-    # 1) huge/light panel backgrounds
+    # 1) Large light panel backgrounds
     if page_area > 0 and area / page_area >= 0.025:
         if fill_rgb and all(c >= 235 for c in fill_rgb[:3]):
             return True
 
-    # 2) white or near-white helper boxes inside panels
+    # 2) White or near-white helper boxes
     if fill_rgb and all(c >= 245 for c in fill_rgb[:3]):
         if area >= 1500:
             return True
 
-    # 3) long thin separator lines
+    # 3) Long thin separator/divider lines
+    # These are structural layout elements, not informational graphics.
     if gtype == "s":
-        if (h <= 2.0 and w >= page_width * 0.5) or (w <= 2.0 and h >= page_height * 0.5):
+        if (h <= 2.0 and w >= page_width * 0.3) or (w <= 2.0 and h >= page_height * 0.3):
             return True
 
-    # 4) very light filled rectangles used as containers/cards
+    # 4) Very light filled rectangles used as containers/cards
     if gtype == "f" and fill_rgb and all(c >= 240 for c in fill_rgb[:3]):
         if w >= 150 and h >= 40:
+            return True
+
+    # 5) Narrow vertical accent bars — purely decorative left-border strips.
+    # These convey no information independently; meaning comes from adjacent text.
+    # WCAG 1.4.11 exempts decorative graphics.
+    if fill_rgb and stroke_rgb is None and w <= 6 and h >= 15:
+        return True
+
+    # 6) Small labeled badge shapes — colored backgrounds behind text labels.
+    # The information (severity, grade, category) is conveyed by the text inside,
+    # not by the colored rectangle itself. WCAG 1.4.11 exempts graphics that are
+    # not required to understand the content.
+    # Criterion: small area, has a fill, aspect ratio consistent with a label chip.
+    if fill_rgb and h <= 25 and w <= 150 and area <= 3000:
+        return True
+
+    # 7) Structural card/container backgrounds with visible border stroke.
+    # Background rectangles behind text content blocks. The border delineates
+    # the card; the fill is purely aesthetic. Information is in the text content.
+    # Only applies to elements smaller than a full content panel.
+    if fill_rgb and stroke_rgb and h <= 80:
+        if page_area > 0 and area / page_area < 0.20:
             return True
 
     return False
@@ -2748,7 +2772,6 @@ def annotate_resize_risk(
             ),
             "risk_score": risk_score,
         }
-
 
 def _is_descriptive_control_name(name: str | None) -> bool:
     if not isinstance(name, str):
