@@ -1,13 +1,13 @@
 from fastapi import APIRouter, UploadFile, File, HTTPException, BackgroundTasks
-from fastapi.responses import StreamingResponse, FileResponse
+from fastapi.responses import StreamingResponse
 from uuid import uuid4
 import os
 import sys
 import json
 import io
 import logging
-from app.services.corrector import apply_corrections
-from app.services.annotator import annotate_pdf
+from app.services.stages.corrector import apply_corrections
+from app.services.stages.annotator import annotate_pdf
 import time
 
 
@@ -84,20 +84,20 @@ async def upload_pdf(background_tasks: BackgroundTasks, file: UploadFile = File(
             raise HTTPException(status_code=400, detail="Invalid PDF file.")
 
     try:
-        from app.services.parsing import extract_document_json
+        from app.services.parse.parsing import extract_document_json
         doc_json = extract_document_json(out_path)
     except Exception as e:
         _cleanup(out_path)
         raise HTTPException(status_code=500, detail=f"Parsing failed: {e}")
 
     try:
-        from app.services.wcag.detector import run_wcag_detector
+        from app.services.stages.detection.detector import run_wcag_detector
         issues = run_wcag_detector(doc_json)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"WCAG detection failed: {e}")
 
     try:
-        from app.services.wcag.report_builder import build_report
+        from app.services.stages.detection.report_builder import build_report
         document_meta = doc_json.get("document", {}).get("metadata", {})
         report = build_report(document_meta, issues)
     except Exception as e:
@@ -112,7 +112,7 @@ async def upload_pdf(background_tasks: BackgroundTasks, file: UploadFile = File(
 
     pdf_out_path = os.path.join(UPLOAD_DIR, f"{upload_id}_report.pdf")
     try:
-        from app.services.wcag.report_builder import build_pdf_report
+        from app.services.stages.detection.report_builder import build_pdf_report
         build_pdf_report(report, pdf_out_path)
     except Exception as e:
         _cleanup( report_json_path)

@@ -1,6 +1,6 @@
-from .batch1_rules import run_batch1_rules
-from .batch2_rules import run_batch2_rules
-from .batch3_rules import run_batch3_rules
+from ...wcag.batch_1.detection import run_batch1_rules
+from ...wcag.batch_2.detection import run_batch2_rules
+from ...wcag.batch_3.detection import run_batch3_rules
 
 def run_wcag_detector(document_model: dict) -> list[dict]:
     issues: list[dict] = []

@@ -1,18 +1,19 @@
-from .issue import make_issue
+from ...stages.detection.issue import make_issue
 from typing import Dict,List,Any
-from .helper_function_b1 import (
+from ...utils.graphics_helper import (
     graphic_overlaps_widget,
-    is_likely_layout_or_decorative_graphic,
-    combine_nearby_spans,
-    matching_widget_for_acrofield,
-    normalize_label,
-    collect_label,
-    detect_link_color_only,
+    is_likely_layout_or_decorative_graphic
+)
+from ...utils.text_helper import combine_nearby_spans,normalize_label
+from ...utils.widget_helper import (
+    matching_widget_for_acrofield,collect_label
+)
+from ...utils.marker_helper import (_is_descriptive_control_name,_is_suspicious_alt_text)
+from .utils.detection_utils import (  detect_link_color_only,
     detect_explicit_color_only_instructions,
     detect_required_field_color_only,
-    detect_repeated_identical_marker_or_label_color_only,
-    _is_descriptive_control_name,_is_suspicious_alt_text
-)
+    detect_repeated_identical_marker_or_label_color_only,)
+
 
 ############
 # WCAG 1.1
