@@ -85,10 +85,21 @@ async def upload_pdf(background_tasks: BackgroundTasks, file: UploadFile = File(
 
     try:
         from app.services.parse.parsing import extract_document_json
+        from app.services.stages.structure.to_markdown import to_markdown
         doc_json = extract_document_json(out_path)
+        # added for the tag structure inference 
+        doc_md=to_markdown(out_path)
     except Exception as e:
         _cleanup(out_path)
         raise HTTPException(status_code=500, detail=f"Parsing failed: {e}")
+    try :
+        from app.services.stages.structure.structure import build_ideal_structure
+        #added for the tag structure inference 
+        doc_struct=build_ideal_structure(doc_md,doc_json)
+        #print(doc_struct)
+    except Exception as e:
+        _cleanup(doc_md)
+        raise HTTPException(status_code=500, detail=f"building internal structure failed: {e}")
 
     try:
         from app.services.stages.detection.detector import run_wcag_detector
