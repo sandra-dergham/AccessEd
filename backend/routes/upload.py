@@ -162,9 +162,6 @@ async def upload_pdf(background_tasks: BackgroundTasks, file: UploadFile = File(
         "size_bytes":        total,
         "status":            "analysed",
         "report":            report,
-        "pdf_report_path":   pdf_out_path,
-        "corrected_path":    corrected_path,
-        "annotated_path":    annotated_path,
     }
 
 
