@@ -1,4 +1,4 @@
-from .scoring import compute_score
+from ...wcag.scoring import compute_score
 from pathlib import Path
 from typing import Any, Dict, List
 from fpdf import FPDF

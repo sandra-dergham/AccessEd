@@ -1,5 +1,5 @@
 import re
-from .issue import make_issue
+from ...stages.detection.issue import make_issue
 
 
 

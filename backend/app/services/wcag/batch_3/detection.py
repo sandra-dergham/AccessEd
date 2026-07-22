@@ -1,6 +1,6 @@
 from __future__ import annotations
 from typing import Any, Dict, List
-from .issue import make_issue
+from ...stages.detection.issue import make_issue
 
 
 def _page(page_index: int) -> int:

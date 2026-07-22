@@ -1,13 +1,13 @@
 from fastapi import APIRouter, UploadFile, File, HTTPException, BackgroundTasks
-from fastapi.responses import StreamingResponse, FileResponse
+from fastapi.responses import StreamingResponse
 from uuid import uuid4
 import os
 import sys
 import json
 import io
 import logging
-from app.services.corrector import apply_corrections
-from app.services.annotator import annotate_pdf
+from app.services.stages.corrector import apply_corrections
+from app.services.stages.annotator import annotate_pdf
 import time
 
 
@@ -84,21 +84,32 @@ async def upload_pdf(background_tasks: BackgroundTasks, file: UploadFile = File(
             raise HTTPException(status_code=400, detail="Invalid PDF file.")
 
     try:
-        from app.services.parsing import extract_document_json
+        from app.services.parse.parsing import extract_document_json
+        from app.services.stages.structure.to_markdown import to_markdown
         doc_json = extract_document_json(out_path)
+        # added for the tag structure inference 
+        doc_md=to_markdown(out_path)
     except Exception as e:
         _cleanup(out_path)
         raise HTTPException(status_code=500, detail=f"Parsing failed: {e}")
+    try :
+        from app.services.stages.structure.structure import build_ideal_structure
+        #added for the tag structure inference 
+        doc_struct=build_ideal_structure(doc_md,doc_json)
+        #print(doc_struct)
+    except Exception as e:
+        _cleanup(doc_md)
+        raise HTTPException(status_code=500, detail=f"building internal structure failed: {e}")
 
     try:
-        from app.services.wcag.detector import run_wcag_detector
+        from app.services.stages.detection.detector import run_wcag_detector
         issues = run_wcag_detector(doc_json)
     except Exception as e:
         _cleanup(out_path)                                          # FIX: was missing
         raise HTTPException(status_code=500, detail=f"WCAG detection failed: {e}")
 
     try:
-        from app.services.wcag.report_builder import build_report
+        from app.services.stages.detection.report_builder import build_report
         document_meta = doc_json.get("document", {}).get("metadata", {})
         report = build_report(document_meta, issues)
     except Exception as e:
