@@ -92,14 +92,24 @@ async def upload_pdf(background_tasks: BackgroundTasks, file: UploadFile = File(
     except Exception as e:
         _cleanup(out_path)
         raise HTTPException(status_code=500, detail=f"Parsing failed: {e}")
-    try :
-        from app.services.stages.structure.structure import build_ideal_structure
-        #added for the tag structure inference 
-        doc_struct=build_ideal_structure(doc_md,doc_json)
-        #print(doc_struct)
-    except Exception as e:
-        _cleanup(doc_md)
-        raise HTTPException(status_code=500, detail=f"building internal structure failed: {e}")
+    
+    # Optional AI structure inference
+    doc_struct = None
+
+    if os.getenv("ENABLE_AI_STRUCTURE", "false").lower() == "true":
+        try:
+            from app.services.stages.structure.structure import build_ideal_structure
+
+            doc_struct = build_ideal_structure(doc_md, doc_json)
+            logger.info("AI structure inference completed successfully.")
+
+        except Exception as e:
+            logger.warning(
+                "AI structure inference unavailable; continuing without it: %s",
+                e
+            )
+    else:
+        logger.info("AI structure inference disabled.")
 
     try:
         from app.services.stages.detection.detector import run_wcag_detector
@@ -126,7 +136,7 @@ async def upload_pdf(background_tasks: BackgroundTasks, file: UploadFile = File(
 
     pdf_out_path = os.path.join(UPLOAD_DIR, f"{upload_id}_report.pdf")
     try:
-        from app.services.wcag.report_builder import build_report_pdf  # FIX: was build_pdf_report
+        from app.services.stages.detection.report_builder import build_report_pdf
         pdf_bytes = build_report_pdf(report)                            # FIX: wrapper returns bytes
         with open(pdf_out_path, "wb") as f:                            # FIX: write bytes to disk
             f.write(pdf_bytes)
